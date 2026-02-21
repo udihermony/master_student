@@ -999,8 +999,12 @@ async function sendMasterMessage() {
       body: JSON.stringify({message: text})
     }).then(r => r.json());
     appendMasterAssistantMsg(data);
+    if (data.correction) {
+      appendMasterAssistantMsg({response: data.correction, actions_taken: data.correction_actions || []});
+    }
     setStatus('Ready', false);
-    if (data.actions_taken && data.actions_taken.length > 0) await refreshAll();
+    const allActions = [...(data.actions_taken || []), ...(data.correction_actions || [])];
+    if (allActions.length > 0) await refreshAll();
   } catch(e) {
     const div = document.createElement('div');
     div.className = 'message assistant';

@@ -600,6 +600,8 @@ async def reset():
 class MasterChatResponse(BaseModel):
     response: str
     actions_taken: list = []
+    correction: Optional[str] = None
+    correction_actions: list = []
 
 
 @app.get("/master-chat/history")
@@ -638,11 +640,43 @@ async def master_chat(request: ChatRequest):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         _append_to_journal(f"[Teacher's Lounge — {timestamp}] {result}")
 
+    # If any actions failed, feed the failures back so the master can correct itself
+    failures = [a for a in actions_executed if (a.get("result") or "").startswith("Action failed")]
+    correction_message = None
+    correction_actions_executed = []
+    if failures:
+        failure_lines = "\n".join(f"- {a['type']}: {a['result']}" for a in failures)
+        feedback = (
+            f"[System] The following action(s) failed to execute:\n{failure_lines}\n\n"
+            "Please review the action payload and retry with the correct parameters, "
+            "or let the operator know what additional information you need."
+        )
+        _master_chat_history.append({"role": "user", "content": feedback})
+        try:
+            correction_message = direct_chat(
+                _master_chat_history, context_block,
+                model=cfg.get("master_model", "claude-opus-4-6"),
+            )
+            _master_chat_history.append({"role": "assistant", "content": correction_message})
+            for action in try_extract_actions(correction_message):
+                result = _execute_master_action(action)
+                correction_actions_executed.append({"type": action.get("type"), "result": result})
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                _append_to_journal(f"[Teacher's Lounge correction — {timestamp}] {result}")
+        except Exception:
+            pass  # correction is best-effort; don't fail the whole request
+        _save_master_chat_history(_master_chat_history)
+
     await _broadcast_status(
         "Teacher's Lounge: master responded"
         + (f" + {len(actions_executed)} action(s)" if actions_executed else "")
     )
-    return MasterChatResponse(response=assistant_message, actions_taken=actions_executed)
+    return MasterChatResponse(
+        response=assistant_message,
+        actions_taken=actions_executed,
+        correction=correction_message,
+        correction_actions=correction_actions_executed,
+    )
 
 
 @app.post("/master-chat/reset")
