@@ -1,0 +1,21 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_folder",
+      "description": "Creates a new folder/directory at the specified path. Use this when the user asks you to create a folder or directory.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The path of the folder to create, e.g., 'project' or 'project/src'"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  }
+]

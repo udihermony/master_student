@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Master-Student LLM</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3250;
+    --text: #e2e4f0;
+    --text-muted: #7a7f9a;
+    --accent: #5c6fff;
+    --accent-dim: #3a40cc;
+    --master: #d4913a;
+    --master-dim: #8a5c1a;
+    --pass: #4caf7d;
+    --fail: #e05252;
+    --warn: #e0a952;
+    --radius: 8px;
+    --sidebar-w: 300px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---- Header ---- */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 1rem; font-weight: 600; }
+  header .tag {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--accent-dim);
+    color: #fff;
+  }
+  header .spacer { flex: 1; }
+  header button {
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  header button:hover { background: var(--surface2); color: var(--text); }
+
+  /* ---- Layout ---- */
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ---- Sidebars ---- */
+  .sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width 0.2s, min-width 0.2s;
+  }
+  .sidebar.right {
+    border-right: none;
+    border-left: 1px solid var(--border);
+  }
+  .sidebar.collapsed { width: 36px; min-width: 36px; }
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+    flex-shrink: 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sidebar-header:hover { background: var(--surface2); }
+  .sidebar-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .sidebar-toggle { font-size: 0.9rem; flex-shrink: 0; }
+  .sidebar-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .sidebar.collapsed .sidebar-body,
+  .sidebar.collapsed .sidebar-title { display: none; }
+
+  .section-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+
+  textarea.prompt-editor {
+    width: 100%;
+    min-height: 120px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.75rem;
+    padding: 8px;
+    resize: vertical;
+    line-height: 1.5;
+  }
+  .save-btn {
+    margin-top: 4px;
+    padding: 4px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .save-btn:hover { background: var(--accent); color: #fff; }
+
+  .tool-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    font-size: 0.75rem;
+  }
+  .tool-name { font-weight: 600; color: var(--accent); }
+  .tool-desc { color: var(--text-muted); margin-top: 2px; }
+
+  .journal-content {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    line-height: 1.6;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+  }
+
+  /* ---- Center panel ---- */
+  .chat-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---- Tabs ---- */
+  .tab-bar {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab {
+    padding: 10px 22px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active-student { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab.active-master  { color: var(--master); border-bottom-color: var(--master); }
+
+  /* ---- Tab content areas ---- */
+  .tab-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .tab-content.hidden { display: none; }
+
+  /* ---- Messages ---- */
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .message { max-width: 720px; width: 100%; }
+  .message.user      { align-self: flex-end; }
+  .message.assistant { align-self: flex-start; }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  /* Student chat bubbles */
+  .student-tab .user .bubble {
+    background: var(--accent-dim);
+    color: #fff;
+    border-bottom-right-radius: 2px;
+  }
+  .student-tab .assistant .bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 2px;
+  }
+
+  /* Master chat bubbles */
+  .master-tab .user .bubble {
+    background: rgba(212, 145, 58, 0.25);
+    border: 1px solid rgba(212, 145, 58, 0.4);
+    color: var(--text);
+    border-bottom-right-radius: 2px;
+  }
+  .master-tab .assistant .bubble {
+    background: var(--surface);
+    border: 1px solid rgba(212, 145, 58, 0.3);
+    border-bottom-left-radius: 2px;
+  }
+
+  /* Teacher's Lounge intro message */
+  .lounge-intro {
+    align-self: center;
+    max-width: 500px;
+    text-align: center;
+    padding: 16px 20px;
+    background: rgba(212, 145, 58, 0.07);
+    border: 1px solid rgba(212, 145, 58, 0.2);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-top: 32px;
+  }
+  .lounge-intro strong { color: var(--master); }
+
+  /* Action chips (Teacher's Lounge) */
+  .action-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .action-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 99px;
+    font-size: 0.7rem;
+    background: rgba(212, 145, 58, 0.1);
+    color: var(--master);
+    border: 1px solid rgba(212, 145, 58, 0.3);
+  }
+
+  /* Verdict badge */
+  .verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 99px;
+    margin-top: 6px;
+    font-weight: 600;
+  }
+  .verdict-PASS      { background: rgba(76,175,125,0.15); color: var(--pass); }
+  .verdict-FAIL_FINAL{ background: rgba(224,82,82,0.15);  color: var(--fail); }
+  .verdict-ERROR     { background: rgba(224,169,82,0.15); color: var(--warn); }
+
+  /* Behind the scenes */
+  .bts-toggle {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .bts-toggle:hover { color: var(--text); }
+  .bts-panel {
+    display: none;
+    margin-top: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    font-size: 0.75rem;
+    line-height: 1.6;
+  }
+  .bts-panel.open { display: block; }
+
+  .scores-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .score-chip {
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 0.7rem;
+  }
+  .reasoning-text { color: var(--text-muted); margin-bottom: 8px; }
+  .actions-list { display: flex; flex-direction: column; gap: 4px; }
+  .action-item { display: flex; align-items: baseline; gap: 6px; font-size: 0.72rem; }
+  .action-type { font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .action-detail { color: var(--text-muted); }
+
+  /* Execution trace */
+  .trace-section { margin-top: 10px; }
+  .trace-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 0.72rem;
+    border-left: 3px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+  .trace-item.error   { border-left-color: var(--fail); background: rgba(224,82,82,0.06); }
+  .trace-item.success { border-left-color: var(--pass); }
+  .trace-step-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+  }
+  .trace-error-badge   { color: var(--fail); font-weight: 600; }
+  .trace-success-badge { color: var(--pass); font-weight: 600; }
+  .trace-detail {
+    color: var(--text-muted);
+    font-family: monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* Master-student dialogue (in student BTS) */
+  .dialogue-section { margin-top: 10px; }
+  .dialogue-item { margin-bottom: 8px; }
+  .dialogue-master, .dialogue-student {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    margin-bottom: 3px;
+  }
+  .dialogue-student { padding-left: 12px; }
+  .dialogue-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .dialogue-label.master  { color: var(--accent); }
+  .dialogue-label.student { color: var(--pass); }
+  .dialogue-text { font-size: 0.72rem; color: var(--text-muted); line-height: 1.5; }
+
+  /* Status bar */
+  .status-bar {
+    padding: 8px 20px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    min-height: 32px;
+    transition: color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .status-bar.active { color: var(--warn); }
+  .spinner {
+    display: none;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--warn);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+  .status-bar.active .spinner { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Input area */
+  .input-area {
+    padding: 12px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .input-area.hidden { display: none; }
+  .input-area textarea {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.9rem;
+    padding: 10px 14px;
+    resize: none;
+    min-height: 44px;
+    max-height: 160px;
+    line-height: 1.5;
+    font-family: inherit;
+  }
+  .input-area textarea:focus { outline: none; border-color: var(--accent); }
+  #master-input:focus { border-color: var(--master); }
+  .send-btn {
+    padding: 0 20px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    cursor: pointer;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .send-btn:hover   { background: var(--accent-dim); }
+  .send-btn:disabled{ opacity: 0.5; cursor: not-allowed; }
+  .send-btn.master-btn { background: var(--master); }
+  .send-btn.master-btn:hover { background: var(--master-dim); }
+
+  /* Master chat clear button */
+  .lounge-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 20px 0;
+    flex-shrink: 0;
+  }
+  .lounge-actions button {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .lounge-actions button:hover { color: var(--fail); border-color: var(--fail); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Master-Student LLM</h1>
+  <span class="tag">Opus 4.6 supervises</span>
+  <div class="spacer"></div>
+  <button onclick="refreshAll()">Refresh</button>
+  <button onclick="resetSystem()" style="color: var(--fail); border-color: var(--fail);">Reset All</button>
+</header>
+
+<div class="layout">
+
+  <!-- Left sidebar: system prompt + tools -->
+  <div class="sidebar" id="left-sidebar">
+    <div class="sidebar-header" onclick="toggleSidebar('left-sidebar')">
+      <span class="sidebar-toggle" id="left-toggle">◀</span>
+      <span class="sidebar-title">Student Config</span>
+    </div>
+    <div class="sidebar-body">
+      <div>
+        <div class="section-label">System Prompt</div>
+        <textarea class="prompt-editor" id="system-prompt-editor" placeholder="Loading..."></textarea>
+        <button class="save-btn" onclick="saveSystemPrompt()">Save Prompt</button>
+      </div>
+      <div>
+        <div class="section-label">Available Tools</div>
+        <div id="tools-list"><span style="color:var(--text-muted);font-size:0.75rem;">No tools yet.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Center: tabbed chat -->
+  <div class="chat-panel">
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab active-student" id="tab-student" onclick="switchTab('student')">Student Chat</button>
+      <button class="tab" id="tab-master" onclick="switchTab('master')">Teacher's Lounge</button>
+    </div>
+
+    <!-- Student Chat Tab -->
+    <div id="student-tab" class="tab-content student-tab">
+      <div class="messages" id="messages">
+        <div class="message assistant" style="align-self:center;opacity:0.5;font-size:0.85rem;margin-top:40px;">
+          Ask the student anything. The master will evaluate every answer before it reaches you.
+        </div>
+      </div>
+    </div>
+
+    <!-- Teacher's Lounge Tab -->
+    <div id="master-tab" class="tab-content master-tab hidden">
+      <div class="lounge-actions">
+        <button onclick="clearMasterChat()">Clear conversation</button>
+      </div>
+      <div class="messages" id="master-messages">
+        <div class="lounge-intro">
+          <strong>Teacher's Lounge</strong><br><br>
+          Talk directly with the master teacher. Discuss the student's progress, give directives, or ask the master to make changes.<br><br>
+          <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shared status bar -->
+    <div class="status-bar" id="status-bar">
+      <div class="spinner"></div>
+      <span id="status-text">Ready</span>
+    </div>
+
+    <!-- Student input -->
+    <div class="input-area" id="student-input-area">
+      <textarea id="user-input" placeholder="Ask the student something..." rows="1"
+        onkeydown="handleStudentKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="send-btn" onclick="sendStudentMessage()">Send</button>
+    </div>
+
+    <!-- Master input -->
+    <div class="input-area hidden" id="master-input-area">
+      <textarea id="master-input" placeholder="Talk to the master teacher..." rows="1"
+        onkeydown="handleMasterKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn master-btn" id="master-send-btn" onclick="sendMasterMessage()">Send</button>
+    </div>
+
+  </div>
+
+  <!-- Right sidebar: teaching journal -->
+  <div class="sidebar right" id="right-sidebar">
+    <div class="sidebar-header" onclick="toggleSidebar('right-sidebar')">
+      <span class="sidebar-toggle" id="right-toggle">▶</span>
+      <span class="sidebar-title">Teaching Journal</span>
+    </div>
+    <div class="sidebar-body">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <span class="section-label" style="margin-bottom:0">Current Session</span>
+        <button id="compress-btn" onclick="compressJournal()"
+          style="font-size:0.7rem;padding:2px 8px;border-radius:var(--radius);border:1px solid var(--master);background:transparent;color:var(--master);cursor:pointer;">
+          Compress &amp; Archive
+        </button>
+      </div>
+      <pre class="journal-content" id="journal-content" style="max-height:220px;overflow-y:auto;">Loading...</pre>
+
+      <div style="margin-top:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <span class="section-label" style="margin-bottom:0">Cross-Session</span>
+          <span id="sessions-count" style="font-size:0.65rem;color:var(--text-muted);"></span>
+        </div>
+        <pre class="journal-content" id="cross-session-content" style="max-height:220px;overflow-y:auto;border-color:rgba(212,145,58,0.25);">Loading...</pre>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '';
+let ws = null;
+let isStudentBusy = false;
+let isMasterBusy = false;
+let activeTab = 'student';
+
+// ---- WebSocket ----
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/chat-stream`);
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'status') setStatus(data.message, true);
+  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
+  ws.onerror  = () => ws.close();
+}
+
+// ---- Status ----
+function setStatus(msg, active = false) {
+  document.getElementById('status-text').textContent = msg;
+  document.getElementById('status-bar').className = 'status-bar' + (active ? ' active' : '');
+}
+
+// ---- Tab switching ----
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('student-tab').classList.toggle('hidden', tab !== 'student');
+  document.getElementById('master-tab').classList.toggle('hidden', tab !== 'master');
+  document.getElementById('student-input-area').classList.toggle('hidden', tab !== 'student');
+  document.getElementById('master-input-area').classList.toggle('hidden', tab !== 'master');
+  const ts = document.getElementById('tab-student');
+  const tm = document.getElementById('tab-master');
+  ts.className = 'tab' + (tab === 'student' ? ' active-student' : '');
+  tm.className = 'tab' + (tab === 'master'  ? ' active-master'  : '');
+  if (tab === 'master') scrollBottom('master-messages');
+}
+
+// ---- Sidebar toggle ----
+function toggleSidebar(id) {
+  const el = document.getElementById(id);
+  const isLeft = id === 'left-sidebar';
+  const toggleEl = document.getElementById(isLeft ? 'left-toggle' : 'right-toggle');
+  el.classList.toggle('collapsed');
+  const collapsed = el.classList.contains('collapsed');
+  toggleEl.textContent = isLeft ? (collapsed ? '▶' : '◀') : (collapsed ? '◀' : '▶');
+}
+
+// ---- Sidebar data ----
+async function loadSystemPrompt() {
+  try {
+    const d = await fetch(`${API}/system-prompt`).then(r => r.json());
+    document.getElementById('system-prompt-editor').value = d.prompt || '';
+  } catch(e) { console.error(e); }
+}
+
+async function loadTools() {
+  try {
+    const d = await fetch(`${API}/tools`).then(r => r.json());
+    const container = document.getElementById('tools-list');
+    if (!d.tools || d.tools.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-muted);font-size:0.75rem;">No tools yet.</span>';
+      return;
+    }
+    container.innerHTML = d.tools.map(t => {
+      const fn = t.function || t;
+      return `<div class="tool-item">
+        <div class="tool-name">${fn.name || t.name}</div>
+        <div class="tool-desc">${fn.description || ''}</div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error(e); }
+}
+
+async function loadJournal() {
+  try {
+    const d = await fetch(`${API}/journal`).then(r => r.json());
+    document.getElementById('journal-content').textContent = d.journal || '';
+  } catch(e) { console.error(e); }
+}
+
+async function loadCrossSessionJournal() {
+  try {
+    const [cj, sess] = await Promise.all([
+      fetch(`${API}/cross-session-journal`).then(r => r.json()),
+      fetch(`${API}/sessions`).then(r => r.json()),
+    ]);
+    document.getElementById('cross-session-content').textContent = cj.journal || '';
+    const count = (sess.sessions || []).length;
+    document.getElementById('sessions-count').textContent =
+      count > 0 ? `${count} session${count > 1 ? 's' : ''} archived` : '';
+  } catch(e) { console.error(e); }
+}
+
+async function compressJournal() {
+  const btn = document.getElementById('compress-btn');
+  btn.disabled = true;
+  btn.textContent = 'Compressing…';
+  setStatus('Asking master to summarize session journal...', true);
+  try {
+    const d = await fetch(`${API}/compress-journal`, {method: 'POST'}).then(r => r.json());
+    if (d.status === 'ok') {
+      setStatus('Journal compressed and archived.', false);
+    } else if (d.status === 'skipped') {
+      setStatus('Nothing to compress yet.', false);
+    } else {
+      setStatus('Compression error: ' + (d.error || 'unknown'), false);
+    }
+    await Promise.all([loadJournal(), loadCrossSessionJournal()]);
+  } catch(e) {
+    setStatus('Compression failed: ' + e, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Compress & Archive';
+  }
+}
+
+async function saveSystemPrompt() {
+  try {
+    await fetch(`${API}/system-prompt`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: document.getElementById('system-prompt-editor').value})
+    });
+    setStatus('System prompt saved.', false);
+  } catch(e) { setStatus('Failed to save.', false); }
+}
+
+async function refreshAll() {
+  await Promise.all([loadSystemPrompt(), loadTools(), loadJournal(), loadCrossSessionJournal()]);
+}
+
+async function resetSystem() {
+  if (!confirm('Reset everything? The current journal will be compressed first, then system prompt, tools, logs, and chat histories are cleared.')) return;
+  setStatus('Compressing journal, then resetting...', true);
+  try {
+    await fetch(`${API}/reset`, {method: 'POST'});
+    await refreshAll();
+    document.getElementById('messages').innerHTML = `
+      <div class="message assistant" style="align-self:center;opacity:0.5;font-size:0.85rem;margin-top:40px;">
+        System reset. Fresh start.</div>`;
+    // Also clear master chat display
+    document.getElementById('master-messages').innerHTML = `
+      <div class="lounge-intro">
+        <strong>Teacher's Lounge</strong><br><br>
+        Talk directly with the master teacher. Discuss the student's progress, give directives, or ask the master to make changes.<br><br>
+        <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+      </div>`;
+    setStatus('Reset complete.', false);
+  } catch(e) { setStatus('Reset failed.', false); }
+}
+
+// ---- Student Chat ----
+function handleStudentKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendStudentMessage(); }
+}
+
+async function sendStudentMessage() {
+  if (isStudentBusy) return;
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = ''; input.style.height = 'auto';
+  isStudentBusy = true;
+  document.getElementById('send-btn').disabled = true;
+  appendStudentUserMsg(text);
+  setStatus('Asking student...', true);
+  try {
+    const data = await fetch(`${API}/chat`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text})
+    }).then(r => r.json());
+    appendStudentAssistantMsg(data);
+    setStatus('Ready', false);
+    await refreshAll();
+  } catch(e) {
+    appendStudentError(e.toString());
+    setStatus('Error: ' + e, false);
+  } finally {
+    isStudentBusy = false;
+    document.getElementById('send-btn').disabled = false;
+  }
+}
+
+function appendStudentUserMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'message user';
+  div.innerHTML = `<div class="bubble">${escHtml(text)}</div>`;
+  document.getElementById('messages').appendChild(div);
+  scrollBottom('messages');
+}
+
+function appendStudentAssistantMsg(data) {
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  const verdictClass = `verdict-${data.verdict || 'ERROR'}`;
+  const verdictLabel = data.verdict === 'PASS' ? '✓ PASS'
+    : data.verdict === 'FAIL_FINAL' ? '✗ FAIL' : '⚠ ' + (data.verdict || 'ERROR');
+  const scores = data.scores ? Object.entries(data.scores).map(([k,v]) =>
+    `<span class="score-chip">${k.replace('_',' ')}: ${v}/5</span>`).join('') : '';
+  const actionsHtml = (data.actions_taken || []).map(a => {
+    let d2 = '';
+    if (a.type === 'retry_with_hint')       d2 = `hint: "${escHtml(a.payload?.hint||'')}"`;
+    else if (a.type === 'edit_system_prompt') d2 = 'rewrote system prompt';
+    else if (a.type === 'add_tool')           d2 = `added: ${escHtml(a.payload?.name||'')}`;
+    else if (a.type === 'remove_tool')        d2 = `removed: ${escHtml(a.payload?.name||'')}`;
+    else if (a.type === 'edit_code')          d2 = `edited: ${escHtml(a.payload?.file_path||'')}`;
+    else if (a.type === 'pass_answer')        d2 = 'answer approved';
+    else if (a.type === 'fail_with_explanation') d2 = 'fallback provided';
+    return `<div class="action-item"><span class="action-type">${escHtml(a.type)}</span><span class="action-detail">${d2}</span></div>`;
+  }).join('');
+  const explanationHtml = data.explanation
+    ? `<div style="margin-top:8px;padding:8px;background:rgba(224,82,82,0.08);border-radius:4px;color:var(--fail);font-size:0.75rem;">${escHtml(data.explanation)}</div>` : '';
+  const traceHtml   = buildTraceHtml(data.execution_trace);
+  const dialogHtml  = buildDialogueHtml(data.student_dialogue);
+  const btsId = 'bts-' + Date.now();
+  div.innerHTML = `
+    <div class="bubble">${escHtml(data.answer||'')}</div>
+    ${explanationHtml}
+    <span class="verdict-badge ${verdictClass}">${verdictLabel} · ${data.attempts} attempt${data.attempts>1?'s':''}</span>
+    <div class="bts-toggle" onclick="toggleBts('${btsId}')">▸ Behind the scenes</div>
+    <div class="bts-panel" id="${btsId}">
+      ${scores ? `<div class="scores-row">${scores}</div>` : ''}
+      ${data.reasoning ? `<div class="reasoning-text">${escHtml(data.reasoning)}</div>` : ''}
+      ${traceHtml}
+      ${dialogHtml}
+      ${actionsHtml ? `<div class="section-label" style="margin-top:10px;margin-bottom:4px;">Actions taken</div><div class="actions-list">${actionsHtml}</div>` : ''}
+    </div>`;
+  document.getElementById('messages').appendChild(div);
+  scrollBottom('messages');
+}
+
+function appendStudentError(msg) {
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  div.innerHTML = `<div class="bubble" style="border-color:var(--fail);color:var(--fail);">Error: ${escHtml(msg)}</div>`;
+  document.getElementById('messages').appendChild(div);
+  scrollBottom('messages');
+}
+
+// ---- Teacher's Lounge ----
+function handleMasterKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMasterMessage(); }
+}
+
+async function sendMasterMessage() {
+  if (isMasterBusy) return;
+  const input = document.getElementById('master-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = ''; input.style.height = 'auto';
+  isMasterBusy = true;
+  document.getElementById('master-send-btn').disabled = true;
+  appendMasterUserMsg(text);
+  setStatus('Consulting master teacher...', true);
+  try {
+    const data = await fetch(`${API}/master-chat`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text})
+    }).then(r => r.json());
+    appendMasterAssistantMsg(data);
+    setStatus('Ready', false);
+    if (data.actions_taken && data.actions_taken.length > 0) await refreshAll();
+  } catch(e) {
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.innerHTML = `<div class="bubble" style="border-color:var(--fail);color:var(--fail);">Error: ${escHtml(e.toString())}</div>`;
+    document.getElementById('master-messages').appendChild(div);
+    scrollBottom('master-messages');
+    setStatus('Error: ' + e, false);
+  } finally {
+    isMasterBusy = false;
+    document.getElementById('master-send-btn').disabled = false;
+  }
+}
+
+function appendMasterUserMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'message user';
+  div.innerHTML = `<div class="bubble">${escHtml(text)}</div>`;
+  document.getElementById('master-messages').appendChild(div);
+  scrollBottom('master-messages');
+}
+
+function appendMasterAssistantMsg(data, isHistory = false) {
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+
+  // Strip ```action blocks from display text
+  const displayText = (data.response || '').replace(/```action[\s\S]*?```/g, '').trim();
+
+  let chipsHtml = '';
+  if (!isHistory && data.actions_taken && data.actions_taken.length > 0) {
+    const actionIcons = {
+      edit_system_prompt: '✏️',
+      add_tool:           '🔧',
+      remove_tool:        '🗑️',
+      edit_code:          '📝',
+    };
+    const chips = data.actions_taken.map(a =>
+      `<span class="action-chip">${actionIcons[a.type] || '⚡'} ${escHtml(a.result || a.type)}</span>`
+    ).join('');
+    chipsHtml = `<div class="action-chips">${chips}</div>`;
+  }
+
+  div.innerHTML = `<div class="bubble">${escHtml(displayText)}</div>${chipsHtml}`;
+  document.getElementById('master-messages').appendChild(div);
+  scrollBottom('master-messages');
+}
+
+async function loadMasterChatHistory() {
+  try {
+    const d = await fetch(`${API}/master-chat/history`).then(r => r.json());
+    const history = d.history || [];
+    for (const msg of history) {
+      if (msg.role === 'user') {
+        appendMasterUserMsg(msg.content);
+      } else if (msg.role === 'assistant') {
+        appendMasterAssistantMsg({response: msg.content, actions_taken: []}, true);
+      }
+    }
+  } catch(e) { console.error('Failed to load master chat history:', e); }
+}
+
+async function clearMasterChat() {
+  if (!confirm('Clear the Teacher\'s Lounge conversation? (Does not affect the student or journal.)')) return;
+  try {
+    await fetch(`${API}/master-chat/reset`, {method: 'POST'});
+    document.getElementById('master-messages').innerHTML = `
+      <div class="lounge-intro">
+        <strong>Teacher's Lounge</strong><br><br>
+        Talk directly with the master teacher. Discuss the student's progress, give directives, or ask the master to make changes.<br><br>
+        <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+      </div>`;
+    setStatus('Master chat cleared.', false);
+  } catch(e) { setStatus('Clear failed.', false); }
+}
+
+// ---- Behind-the-scenes helpers ----
+function buildTraceHtml(trace) {
+  if (!trace || trace.length === 0) return '';
+  const items = trace.map(t => {
+    const isError = t.status === 'error';
+    const cls = isError ? 'error' : (t.tool ? 'success' : '');
+    let inner = `<span class="trace-step-label">${escHtml(t.step || '')}</span>`;
+    if (t.tool) {
+      const badge = isError
+        ? `<span class="trace-error-badge">ERROR: ${escHtml(t.error_type || '')}</span>`
+        : `<span class="trace-success-badge">OK</span>`;
+      inner += ` &mdash; ${escHtml(t.tool)} ${badge}`;
+      if (t.arguments && Object.keys(t.arguments).length)
+        inner += `<div class="trace-detail">args: ${escHtml(JSON.stringify(t.arguments))}</div>`;
+      if (isError) {
+        inner += `<div class="trace-detail">${escHtml(t.error_message || '')}</div>`;
+        if (t.traceback)
+          inner += `<div class="trace-detail" style="opacity:0.6;font-size:0.65rem;">${escHtml(t.traceback.slice(0,400))}${t.traceback.length>400?'…':''}</div>`;
+      } else if (t.result) {
+        inner += `<div class="trace-detail">result: ${escHtml(String(t.result).slice(0,200))}</div>`;
+      }
+    } else if (t.content) {
+      const preview = String(t.content).replace(/<think>[\s\S]*?<\/think>/g,'').trim().slice(0,120);
+      inner += `<div class="trace-detail">${escHtml(preview)}${preview.length>=120?'…':''}</div>`;
+    }
+    return `<div class="trace-item ${cls}">${inner}</div>`;
+  }).join('');
+  return `<div class="trace-section"><div class="section-label" style="margin-bottom:4px;">Execution trace</div>${items}</div>`;
+}
+
+function buildDialogueHtml(dialogue) {
+  if (!dialogue || dialogue.length === 0) return '';
+  const items = dialogue.map(d => `
+    <div class="dialogue-item">
+      <div class="dialogue-master">
+        <span class="dialogue-label master">Master</span>
+        <span class="dialogue-text">${escHtml(d.master_question || '')}</span>
+      </div>
+      <div class="dialogue-student">
+        <span class="dialogue-label student">Student</span>
+        <span class="dialogue-text">${escHtml((d.student_response||'').replace(/<think>[\s\S]*?<\/think>/g,'').trim().slice(0,300))}</span>
+      </div>
+    </div>`).join('');
+  return `<div class="dialogue-section"><div class="section-label" style="margin-bottom:4px;">Master ↔ Student dialogue</div>${items}</div>`;
+}
+
+function toggleBts(id) {
+  const panel = document.getElementById(id);
+  const toggle = panel.previousElementSibling;
+  panel.classList.toggle('open');
+  toggle.textContent = panel.classList.contains('open') ? '▾ Behind the scenes' : '▸ Behind the scenes';
+}
+
+// ---- Utilities ----
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+function scrollBottom(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollTop = el.scrollHeight;
+}
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
+}
+
+// ---- Init ----
+connectWS();
+refreshAll();
+loadMasterChatHistory();
+loadCrossSessionJournal();
+</script>
+</body>
+</html>

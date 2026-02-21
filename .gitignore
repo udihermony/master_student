@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Logs (don't commit conversation history)
+logs/conversation_log.jsonl
+
+# Master chat history (session-specific, not meant to persist in repo)
+master_config/master_chat_history.json
+
+# Archived session journals (can get large; cross_session_journal.md is enough)
+master_config/sessions/
