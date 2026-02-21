@@ -1,0 +1,6 @@
+{
+  "master_model": "claude-opus-4-6",
+  "max_attempts": 3,
+  "max_student_questions": 3,
+  "student_temperature": 0.7
+}

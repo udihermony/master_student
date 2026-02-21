@@ -172,6 +172,73 @@
     padding: 8px;
   }
 
+  /* ---- Teacher Config ---- */
+  .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .config-field.full-width { grid-column: 1 / -1; }
+  .config-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .config-select, .config-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.75rem;
+    padding: 4px 6px;
+    width: 100%;
+  }
+  .config-select:focus, .config-input:focus {
+    outline: none;
+    border-color: var(--master);
+  }
+  .config-range-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .config-range-row input[type=range] {
+    flex: 1;
+    accent-color: var(--master);
+  }
+  .config-range-val {
+    font-size: 0.75rem;
+    color: var(--text);
+    min-width: 28px;
+    text-align: right;
+  }
+  .config-save-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+  .config-save-btn {
+    font-size: 0.7rem;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--master);
+    background: transparent;
+    color: var(--master);
+    cursor: pointer;
+  }
+  .config-save-btn:hover { background: var(--master); color: #fff; }
+  .config-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+
   /* ---- Center panel ---- */
   .chat-panel {
     flex: 1;
@@ -570,13 +637,50 @@
 
   </div>
 
-  <!-- Right sidebar: teaching journal -->
+  <!-- Right sidebar: teacher config + teaching journal -->
   <div class="sidebar right" id="right-sidebar">
     <div class="sidebar-header" onclick="toggleSidebar('right-sidebar')">
       <span class="sidebar-toggle" id="right-toggle">▶</span>
-      <span class="sidebar-title">Teaching Journal</span>
+      <span class="sidebar-title">Master Settings</span>
     </div>
     <div class="sidebar-body">
+
+      <!-- Teacher Config -->
+      <div>
+        <div class="section-label">Teacher Config</div>
+        <div class="config-grid">
+          <div class="config-field full-width">
+            <span class="config-label">Master Model</span>
+            <select class="config-select" id="cfg-master-model">
+              <option value="claude-opus-4-6">Opus 4.6 (best)</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6 (balanced)</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (fast)</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <span class="config-label">Max Attempts</span>
+            <input class="config-input" id="cfg-max-attempts" type="number" min="1" max="10" value="3">
+          </div>
+          <div class="config-field">
+            <span class="config-label">Max Questions</span>
+            <input class="config-input" id="cfg-max-questions" type="number" min="0" max="5" value="3">
+          </div>
+          <div class="config-field full-width">
+            <span class="config-label">Student Temperature</span>
+            <div class="config-range-row">
+              <input type="range" id="cfg-temperature" min="0" max="2" step="0.1" value="0.7"
+                oninput="document.getElementById('cfg-temp-val').textContent = parseFloat(this.value).toFixed(1)">
+              <span class="config-range-val" id="cfg-temp-val">0.7</span>
+            </div>
+          </div>
+        </div>
+        <div class="config-save-row">
+          <button class="config-save-btn" onclick="saveTeacherConfig()">Save Config</button>
+        </div>
+      </div>
+
+      <hr class="config-divider">
+
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
         <span class="section-label" style="margin-bottom:0">Current Session</span>
         <button id="compress-btn" onclick="compressJournal()"
@@ -714,6 +818,39 @@ async function compressJournal() {
     btn.disabled = false;
     btn.textContent = 'Compress & Archive';
   }
+}
+
+async function loadTeacherConfig() {
+  try {
+    const d = await fetch(`${API}/teacher-config`).then(r => r.json());
+    const model = d.master_model || 'claude-opus-4-6';
+    const sel = document.getElementById('cfg-master-model');
+    // Select matching option, fallback to first
+    const opt = [...sel.options].find(o => o.value === model);
+    sel.value = opt ? model : sel.options[0].value;
+    document.getElementById('cfg-max-attempts').value  = d.max_attempts ?? 3;
+    document.getElementById('cfg-max-questions').value = d.max_student_questions ?? 3;
+    const temp = d.student_temperature ?? 0.7;
+    document.getElementById('cfg-temperature').value   = temp;
+    document.getElementById('cfg-temp-val').textContent = parseFloat(temp).toFixed(1);
+  } catch(e) { console.error('Failed to load teacher config:', e); }
+}
+
+async function saveTeacherConfig() {
+  const body = {
+    master_model:        document.getElementById('cfg-master-model').value,
+    max_attempts:        parseInt(document.getElementById('cfg-max-attempts').value, 10),
+    max_student_questions: parseInt(document.getElementById('cfg-max-questions').value, 10),
+    student_temperature: parseFloat(document.getElementById('cfg-temperature').value),
+  };
+  try {
+    await fetch(`${API}/teacher-config`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    setStatus('Teacher config saved.', false);
+  } catch(e) { setStatus('Failed to save config.', false); }
 }
 
 async function saveSystemPrompt() {
@@ -1012,6 +1149,7 @@ connectWS();
 refreshAll();
 loadMasterChatHistory();
 loadCrossSessionJournal();
+loadTeacherConfig();
 </script>
 </body>
 </html>

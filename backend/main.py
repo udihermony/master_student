@@ -35,6 +35,23 @@ FRONTEND_PATH = BASE_DIR / "frontend" / "index.html"
 MASTER_CHAT_HISTORY_PATH = BASE_DIR / "master_config" / "master_chat_history.json"
 CROSS_SESSION_JOURNAL_PATH = BASE_DIR / "master_config" / "cross_session_journal.md"
 SESSIONS_DIR = BASE_DIR / "master_config" / "sessions"
+TEACHER_CONFIG_PATH = BASE_DIR / "master_config" / "teacher_config.json"
+
+_DEFAULT_TEACHER_CONFIG = {
+    "master_model": "claude-opus-4-6",
+    "max_attempts": 3,
+    "max_student_questions": 3,
+    "student_temperature": 0.7,
+}
+
+
+def _read_teacher_config() -> dict:
+    if TEACHER_CONFIG_PATH.exists():
+        try:
+            return json.loads(TEACHER_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError):
+            pass
+    return dict(_DEFAULT_TEACHER_CONFIG)
 
 FRESH_JOURNAL_TEXT = (
     "# Teaching Journal\n\n"
@@ -98,6 +115,13 @@ class ChatResponse(BaseModel):
 
 class SystemPromptUpdate(BaseModel):
     prompt: str
+
+
+class TeacherConfig(BaseModel):
+    master_model: str = "claude-opus-4-6"
+    max_attempts: int = 3
+    max_student_questions: int = 3
+    student_temperature: float = 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +293,8 @@ def _archive_journal() -> Optional[str]:
         return None
 
     # Ask the master to summarize
-    summary = compress_journal(journal_text)
+    cfg = _read_teacher_config()
+    summary = compress_journal(journal_text, model=cfg["master_model"])
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
 
@@ -304,7 +329,8 @@ def _archive_journal() -> Optional[str]:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     question = request.message
-    max_retries = 3
+    cfg = _read_teacher_config()
+    max_retries = int(cfg.get("max_attempts", 3))
     actions_taken: list[dict] = []
 
     for attempt in range(1, max_retries + 1):
@@ -313,7 +339,10 @@ async def chat(request: ChatRequest):
             f"Asking student... (attempt {attempt}/{max_retries})"
         )
         try:
-            student_result = ask_student(question, _conversation_history)
+            student_result = ask_student(
+                question, _conversation_history,
+                temperature=float(cfg.get("student_temperature", 0.7)),
+            )
         except Exception as exc:
             await _broadcast_status(f"Student error: {exc}")
             return ChatResponse(
@@ -325,7 +354,11 @@ async def chat(request: ChatRequest):
         # 2. Send to master for evaluation
         await _broadcast_status("Master evaluating student's answer...")
         try:
-            evaluation = evaluate(question, student_result, attempt)
+            evaluation = evaluate(
+                question, student_result, attempt,
+                model=cfg.get("master_model", "claude-opus-4-6"),
+                max_student_questions=int(cfg.get("max_student_questions", 3)),
+            )
         except Exception as exc:
             await _broadcast_status(f"Master error: {exc}")
             return ChatResponse(
@@ -464,6 +497,19 @@ async def update_system_prompt(body: SystemPromptUpdate):
     return {"status": "ok"}
 
 
+@app.get("/teacher-config")
+async def get_teacher_config():
+    return _read_teacher_config()
+
+
+@app.put("/teacher-config")
+async def update_teacher_config(config: TeacherConfig):
+    TEACHER_CONFIG_PATH.write_text(
+        json.dumps(config.model_dump(), indent=2), encoding="utf-8"
+    )
+    return {"status": "ok"}
+
+
 @app.get("/tools")
 async def get_tools():
     return {"tools": _read_tools()}
@@ -570,8 +616,12 @@ async def master_chat(request: ChatRequest):
 
     # Build fresh context block and call the master
     context_block = _build_master_context_block()
+    cfg = _read_teacher_config()
     try:
-        assistant_message = direct_chat(_master_chat_history, context_block)
+        assistant_message = direct_chat(
+            _master_chat_history, context_block,
+            model=cfg.get("master_model", "claude-opus-4-6"),
+        )
     except Exception as exc:
         _master_chat_history.pop()  # roll back the user message
         return MasterChatResponse(response=f"Master error: {exc}")

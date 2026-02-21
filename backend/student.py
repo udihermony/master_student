@@ -26,12 +26,12 @@ def _read_tools() -> list:
     return json.loads(content) if content else []
 
 
-def _call_lm_studio(messages: list, tools: Optional[list] = None) -> dict:
+def _call_lm_studio(messages: list, tools: Optional[list] = None, temperature: float = 0.7) -> dict:
     """Send a request to LM Studio and return the raw response dict."""
     payload: dict = {
         "model": "local-model",  # LM Studio ignores this but requires it
         "messages": messages,
-        "temperature": 0.7,
+        "temperature": temperature,
         "max_tokens": 2048,
     }
     if tools:
@@ -48,7 +48,7 @@ def _call_lm_studio(messages: list, tools: Optional[list] = None) -> dict:
         return resp.json()
 
 
-def ask_student(question: str, conversation_history: list) -> dict:
+def ask_student(question: str, conversation_history: list, temperature: float = 0.7) -> dict:
     """
     Ask the student LLM a question.
 
@@ -71,7 +71,7 @@ def ask_student(question: str, conversation_history: list) -> dict:
     messages.append({"role": "user", "content": question})
 
     # Initial LM Studio call
-    response = _call_lm_studio(messages, tools=tools if tools else None)
+    response = _call_lm_studio(messages, tools=tools if tools else None, temperature=temperature)
     choice = response["choices"][0]
     message = choice["message"]
 
@@ -134,7 +134,7 @@ def ask_student(question: str, conversation_history: list) -> dict:
 
         # Second LM Studio call with tool results
         try:
-            response2 = _call_lm_studio(messages, tools=tools if tools else None)
+            response2 = _call_lm_studio(messages, tools=tools if tools else None, temperature=temperature)
             message2 = response2["choices"][0]["message"]
             final_answer = message2.get("content") or ""
             execution_trace.append(

@@ -166,7 +166,13 @@ def _build_evaluation_prompt(
 Evaluate this answer and decide what to do."""
 
 
-def evaluate(question: str, student_result: dict, attempt: int) -> dict:
+def evaluate(
+    question: str,
+    student_result: dict,
+    attempt: int,
+    model: str = MODEL,
+    max_student_questions: int = 3,
+) -> dict:
     """
     Send the student's result to the master for evaluation.
     Supports multi-turn dialogue: if the master asks the student a question,
@@ -201,13 +207,12 @@ def evaluate(question: str, student_result: dict, attempt: int) -> dict:
 
     master_messages = [{"role": "user", "content": initial_prompt}]
 
-    max_student_questions = 3
     questions_asked = 0
     student_dialogue = []
 
     while True:
         response = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=4096,
             system=MASTER_SYSTEM_PROMPT,
             messages=master_messages,
@@ -316,14 +321,14 @@ def try_extract_actions(response_text: str) -> list:
     return actions
 
 
-def compress_journal(journal_text: str) -> str:
+def compress_journal(journal_text: str, model: str = MODEL) -> str:
     """
     Ask the master to summarize one session's teaching journal.
     Returns a concise summary suitable for the cross-session journal.
     """
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     response = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=1024,
         system=(
             "You are the master teacher in a master-student LLM teaching system. "
@@ -346,7 +351,7 @@ def compress_journal(journal_text: str) -> str:
     return response.content[0].text
 
 
-def direct_chat(history: list, context_block: str) -> str:
+def direct_chat(history: list, context_block: str, model: str = MODEL) -> str:
     """
     One turn of the master direct chat.
     history: list of {"role": "user"|"assistant", "content": str} messages
@@ -355,7 +360,7 @@ def direct_chat(history: list, context_block: str) -> str:
     """
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     response = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=4096,
         system=MASTER_DIRECT_CHAT_SYSTEM_PROMPT + "\n\n" + context_block,
         messages=history,
