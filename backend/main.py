@@ -37,6 +37,13 @@ CROSS_SESSION_JOURNAL_PATH = BASE_DIR / "master_config" / "cross_session_journal
 SESSIONS_DIR = BASE_DIR / "master_config" / "sessions"
 TEACHER_CONFIG_PATH = BASE_DIR / "master_config" / "teacher_config.json"
 
+FRESH_CROSS_SESSION_TEXT = (
+    "# Cross-Session Journal\n\n"
+    "*Compressed summaries of each teaching session, maintained by the master across resets.*\n\n"
+    "---\n\n"
+    "(No sessions compressed yet.)\n"
+)
+
 _DEFAULT_TEACHER_CONFIG = {
     "master_model": "claude-opus-4-6",
     "max_attempts": 3,
@@ -590,6 +597,35 @@ async def reset():
     _master_chat_history = []
     _save_master_chat_history(_master_chat_history)
     return {"status": "reset complete"}
+
+
+@app.post("/clear-history")
+async def clear_history():
+    """Wipe all logs and history without touching student config or compressing journals."""
+    global _master_chat_history
+
+    # Clear conversation log
+    LOG_PATH.write_text("", encoding="utf-8")
+
+    # Reset teaching journal to fresh state
+    JOURNAL_PATH.write_text(FRESH_JOURNAL_TEXT, encoding="utf-8")
+
+    # Reset cross-session journal to fresh state
+    CROSS_SESSION_JOURNAL_PATH.write_text(FRESH_CROSS_SESSION_TEXT, encoding="utf-8")
+
+    # Remove all archived session files
+    if SESSIONS_DIR.exists():
+        for f in SESSIONS_DIR.glob("*.md"):
+            f.unlink()
+
+    # Clear in-memory conversation history
+    _conversation_history.clear()
+
+    # Clear master chat history (in-memory + disk)
+    _master_chat_history = []
+    _save_master_chat_history(_master_chat_history)
+
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

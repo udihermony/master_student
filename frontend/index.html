@@ -559,6 +559,7 @@
   <span class="tag">Opus 4.6 supervises</span>
   <div class="spacer"></div>
   <button onclick="refreshAll()">Refresh</button>
+  <button onclick="clearHistory()" style="color: var(--warn); border-color: var(--warn);">Clear History</button>
   <button onclick="resetSystem()" style="color: var(--fail); border-color: var(--fail);">Reset All</button>
 </header>
 
@@ -866,6 +867,24 @@ async function saveSystemPrompt() {
 
 async function refreshAll() {
   await Promise.all([loadSystemPrompt(), loadTools(), loadJournal(), loadCrossSessionJournal()]);
+}
+
+async function clearHistory() {
+  if (!confirm('Clear all logs, journals, and chat history? Student config (system prompt + tools) is kept.')) return;
+  setStatus('Clearing history...', true);
+  try {
+    await fetch(`${API}/clear-history`, {method: 'POST'});
+    document.getElementById('messages').innerHTML = `
+      <div class="message assistant" style="align-self:center;opacity:0.5;font-size:0.85rem;margin-top:40px;">
+        History cleared.</div>`;
+    document.getElementById('master-messages').innerHTML = `
+      <div class="lounge-intro">
+        <strong>Teacher's Lounge</strong><br>
+        <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+      </div>`;
+    await refreshAll();
+    setStatus('History cleared.', false);
+  } catch(e) { setStatus('Clear failed: ' + e, false); }
 }
 
 async function resetSystem() {
