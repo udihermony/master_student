@@ -558,9 +558,11 @@
   <h1>Master-Student LLM</h1>
   <span class="tag">Opus 4.6 supervises</span>
   <div class="spacer"></div>
-  <button onclick="refreshAll()">Refresh</button>
-  <button onclick="clearHistory()" style="color: var(--warn); border-color: var(--warn);">Clear History</button>
-  <button onclick="resetSystem()" style="color: var(--fail); border-color: var(--fail);">Reset All</button>
+  <button onclick="refreshAll()" title="Reload system prompt, tools, and journals from disk">Refresh</button>
+  <button onclick="clearHistory()" style="color: var(--warn); border-color: var(--warn);"
+    title="Wipe all logs, journals, and chat history. Keeps system prompt, tools, and teacher config intact.">Clear History</button>
+  <button onclick="resetSystem()" style="color: var(--fail); border-color: var(--fail);"
+    title="Full reset: compresses journal, then clears everything including system prompt and tools. Starts a fresh experiment.">Reset All</button>
 </header>
 
 <div class="layout">
