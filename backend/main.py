@@ -604,6 +604,31 @@ async def reset():
     return {"status": "reset complete"}
 
 
+@app.post("/new-chat")
+async def new_chat():
+    """Start a new chat session: compress journal, clear conversation. Student config unchanged."""
+    global _master_chat_history
+
+    # Archive current session journal so master retains cross-session memory
+    await _broadcast_status("Archiving session journal...")
+    try:
+        _archive_journal()
+    except Exception:
+        pass  # Don't block new chat if compression fails
+
+    # Clear conversation log
+    LOG_PATH.write_text("", encoding="utf-8")
+
+    # Clear in-memory conversation history
+    _conversation_history.clear()
+
+    # Clear master chat history (new session, fresh Teacher's Lounge)
+    _master_chat_history = []
+    _save_master_chat_history(_master_chat_history)
+
+    return {"status": "ok"}
+
+
 @app.post("/clear-history")
 async def clear_history():
     """Wipe all logs and history without touching student config or compressing journals."""

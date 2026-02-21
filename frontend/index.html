@@ -559,6 +559,8 @@
   <span class="tag">Opus 4.6 supervises</span>
   <div class="spacer"></div>
   <button onclick="refreshAll()" title="Reload system prompt, tools, and journals from disk">Refresh</button>
+  <button onclick="newChat()" style="color: var(--accent); border-color: var(--accent);"
+    title="Start a new conversation. Archives the current session journal so the master remembers it. System prompt and tools stay the same.">New Chat</button>
   <button onclick="clearHistory()" style="color: var(--warn); border-color: var(--warn);"
     title="Wipe all logs, journals, and chat history. Keeps system prompt, tools, and teacher config intact.">Clear History</button>
   <button onclick="resetSystem()" style="color: var(--fail); border-color: var(--fail);"
@@ -869,6 +871,23 @@ async function saveSystemPrompt() {
 
 async function refreshAll() {
   await Promise.all([loadSystemPrompt(), loadTools(), loadJournal(), loadCrossSessionJournal()]);
+}
+
+async function newChat() {
+  setStatus('Archiving session, starting new chat...', true);
+  try {
+    await fetch(`${API}/new-chat`, {method: 'POST'});
+    document.getElementById('messages').innerHTML = `
+      <div class="message assistant" style="align-self:center;opacity:0.5;font-size:0.85rem;margin-top:40px;">
+        New chat started. The master remembers previous sessions.</div>`;
+    document.getElementById('master-messages').innerHTML = `
+      <div class="lounge-intro">
+        <strong>Teacher's Lounge</strong><br>
+        <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+      </div>`;
+    await refreshAll();
+    setStatus('New chat ready.', false);
+  } catch(e) { setStatus('Failed to start new chat: ' + e, false); }
 }
 
 async function clearHistory() {
