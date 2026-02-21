@@ -590,6 +590,11 @@ async def reset():
     # Journal was already reset by _archive_journal(); ensure it's fresh if archive was skipped
     if _journal_has_real_content(_read_file(JOURNAL_PATH)):
         JOURNAL_PATH.write_text(FRESH_JOURNAL_TEXT, encoding="utf-8")
+    # Clear cross-session journal and all session archives
+    CROSS_SESSION_JOURNAL_PATH.write_text(FRESH_CROSS_SESSION_TEXT, encoding="utf-8")
+    if SESSIONS_DIR.exists():
+        for f in SESSIONS_DIR.glob("*.md"):
+            f.unlink()
     # Clear conversation history
     _conversation_history.clear()
     # Clear master chat history
