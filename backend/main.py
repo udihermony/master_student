@@ -3,15 +3,17 @@
 import asyncio
 import json
 import os
-import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,33 +24,43 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from backend.master import compress_journal, direct_chat, evaluate, try_extract_actions
+from backend.master import (
+    DEFAULT_MASTER_BASE_PROMPT,
+    _EVALUATION_TAIL,
+    _LOUNGE_TAIL,
+    compress_journal,
+    direct_chat,
+    evaluate,
+    try_extract_actions,
+)
 from backend.student import ask_student
 from backend.tool_executor import add_tool, remove_tool
+import backend.db as db
 
 BASE_DIR = Path(__file__).parent.parent
-SYSTEM_PROMPT_PATH = BASE_DIR / "student_config" / "system_prompt.md"
-TOOLS_JSON_PATH = BASE_DIR / "student_config" / "tools.json"
-JOURNAL_PATH = BASE_DIR / "master_config" / "teaching_journal.md"
-LOG_PATH = BASE_DIR / "logs" / "conversation_log.jsonl"
-FRONTEND_PATH = BASE_DIR / "frontend" / "index.html"
-MASTER_CHAT_HISTORY_PATH = BASE_DIR / "master_config" / "master_chat_history.json"
-CROSS_SESSION_JOURNAL_PATH = BASE_DIR / "master_config" / "cross_session_journal.md"
-SESSIONS_DIR = BASE_DIR / "master_config" / "sessions"
-TEACHER_CONFIG_PATH = BASE_DIR / "master_config" / "teacher_config.json"
+FRONTEND_PATH = BASE_DIR / "frontend" / "index.html"  # never changes
 
-FRESH_CROSS_SESSION_TEXT = (
-    "# Cross-Session Journal\n\n"
-    "*Compressed summaries of each teaching session, maintained by the master across resets.*\n\n"
-    "---\n\n"
-    "(No sessions compressed yet.)\n"
-)
+# ---------------------------------------------------------------------------
+# Module-level mutable path globals — updated by _load_active_classroom()
+# Initial values point to legacy flat layout (used only before migration)
+# ---------------------------------------------------------------------------
+_active_classroom_id: str = ""
+SYSTEM_PROMPT_PATH: Path = BASE_DIR / "student_config" / "system_prompt.md"
+TOOLS_JSON_PATH: Path = BASE_DIR / "student_config" / "tools.json"
+TOOLS_DIR: Path = BASE_DIR / "student_config" / "tools"
+JOURNAL_PATH: Path = BASE_DIR / "master_config" / "teaching_journal.md"
+LOG_PATH: Path = BASE_DIR / "logs" / "conversation_log.jsonl"
+MASTER_CHAT_HISTORY_PATH: Path = BASE_DIR / "master_config" / "master_chat_history.json"
+TEACHER_CONFIG_PATH: Path = BASE_DIR / "master_config" / "teacher_config.json"
+MASTER_PROMPT_PATH: Path = BASE_DIR / "master_config" / "master_prompt.md"
 
 _DEFAULT_TEACHER_CONFIG = {
     "master_model": "claude-opus-4-6",
     "max_attempts": 3,
     "max_student_questions": 3,
     "student_temperature": 0.7,
+    "student_name": "Student",
+    "master_name": "Master",
 }
 
 
@@ -59,6 +71,7 @@ def _read_teacher_config() -> dict:
         except (json.JSONDecodeError, IOError):
             pass
     return dict(_DEFAULT_TEACHER_CONFIG)
+
 
 FRESH_JOURNAL_TEXT = (
     "# Teaching Journal\n\n"
@@ -87,7 +100,22 @@ _ws_connections: list[WebSocket] = []
 # Conversation history (in-memory, per session — cleared on /reset)
 _conversation_history: list[dict] = []
 
+# Current DB session ID
+_current_session_id: str = ""
+
 # Master direct-chat history (persisted to disk)
+_master_chat_history: list = []
+
+
+# ---------------------------------------------------------------------------
+# Classroom helpers
+# ---------------------------------------------------------------------------
+
+
+def _classroom_dir(classroom_id: str) -> Path:
+    return BASE_DIR / "classrooms" / classroom_id
+
+
 def _load_master_chat_history() -> list:
     if MASTER_CHAT_HISTORY_PATH.exists():
         try:
@@ -96,7 +124,152 @@ def _load_master_chat_history() -> list:
             return []
     return []
 
-_master_chat_history: list = _load_master_chat_history()
+
+def _load_active_classroom(classroom_id: str) -> None:
+    """Update all path globals to point at the given classroom's directories."""
+    global _active_classroom_id
+    global SYSTEM_PROMPT_PATH, TOOLS_JSON_PATH, TOOLS_DIR
+    global JOURNAL_PATH, LOG_PATH, MASTER_CHAT_HISTORY_PATH, TEACHER_CONFIG_PATH
+    global MASTER_PROMPT_PATH, _master_chat_history
+
+    _active_classroom_id = classroom_id
+    c_dir = _classroom_dir(classroom_id)
+
+    SYSTEM_PROMPT_PATH = c_dir / "student_config" / "system_prompt.md"
+    TOOLS_JSON_PATH = c_dir / "student_config" / "tools.json"
+    TOOLS_DIR = c_dir / "student_config" / "tools"
+    JOURNAL_PATH = c_dir / "master_config" / "teaching_journal.md"
+    LOG_PATH = c_dir / "logs" / "conversation_log.jsonl"
+    MASTER_CHAT_HISTORY_PATH = c_dir / "master_config" / "master_chat_history.json"
+    TEACHER_CONFIG_PATH = c_dir / "master_config" / "teacher_config.json"
+    MASTER_PROMPT_PATH = c_dir / "master_config" / "master_prompt.md"
+
+    _master_chat_history = _load_master_chat_history()
+
+
+def _build_master_eval_prompt() -> str:
+    base = _read_file(MASTER_PROMPT_PATH) or DEFAULT_MASTER_BASE_PROMPT
+    return base + "\n\n" + _EVALUATION_TAIL
+
+
+def _build_master_lounge_prompt() -> str:
+    base = _read_file(MASTER_PROMPT_PATH) or DEFAULT_MASTER_BASE_PROMPT
+    return base + "\n\n" + _LOUNGE_TAIL
+
+
+def _create_classroom_skeleton(classroom_id: str) -> None:
+    """Create directory structure and default files for a new classroom."""
+    c_dir = _classroom_dir(classroom_id)
+    (c_dir / "student_config" / "tools").mkdir(parents=True, exist_ok=True)
+    (c_dir / "master_config").mkdir(parents=True, exist_ok=True)
+    (c_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+    sp_path = c_dir / "student_config" / "system_prompt.md"
+    if not sp_path.exists():
+        sp_path.write_text(INITIAL_SYSTEM_PROMPT, encoding="utf-8")
+
+    tools_path = c_dir / "student_config" / "tools.json"
+    if not tools_path.exists():
+        tools_path.write_text("[]", encoding="utf-8")
+
+    mp_path = c_dir / "master_config" / "master_prompt.md"
+    if not mp_path.exists():
+        mp_path.write_text(DEFAULT_MASTER_BASE_PROMPT, encoding="utf-8")
+
+    tc_path = c_dir / "master_config" / "teacher_config.json"
+    if not tc_path.exists():
+        tc_path.write_text(json.dumps(_DEFAULT_TEACHER_CONFIG, indent=2), encoding="utf-8")
+
+    journal_path = c_dir / "master_config" / "teaching_journal.md"
+    if not journal_path.exists():
+        journal_path.write_text(FRESH_JOURNAL_TEXT, encoding="utf-8")
+
+    history_path = c_dir / "master_config" / "master_chat_history.json"
+    if not history_path.exists():
+        history_path.write_text("[]", encoding="utf-8")
+
+    log_path = c_dir / "logs" / "conversation_log.jsonl"
+    if not log_path.exists():
+        log_path.write_text("", encoding="utf-8")
+
+
+def _migrate_if_needed() -> None:
+    """
+    First-run migration: copy flat student_config/master_config/logs into
+    classrooms/default/, write master_prompt.md, insert DB row, activate.
+    On subsequent runs, just loads the active classroom from DB.
+    """
+    default_dir = _classroom_dir("default")
+
+    if not default_dir.exists():
+        # First time — build the default classroom from the old flat layout
+        default_dir.mkdir(parents=True, exist_ok=True)
+
+        old_student = BASE_DIR / "student_config"
+        old_master = BASE_DIR / "master_config"
+        old_logs = BASE_DIR / "logs"
+
+        if old_student.exists():
+            shutil.copytree(str(old_student), str(default_dir / "student_config"), dirs_exist_ok=True)
+        else:
+            (default_dir / "student_config" / "tools").mkdir(parents=True, exist_ok=True)
+            (default_dir / "student_config" / "system_prompt.md").write_text(
+                INITIAL_SYSTEM_PROMPT, encoding="utf-8"
+            )
+            (default_dir / "student_config" / "tools.json").write_text("[]", encoding="utf-8")
+
+        if old_master.exists():
+            shutil.copytree(str(old_master), str(default_dir / "master_config"), dirs_exist_ok=True)
+        else:
+            (default_dir / "master_config").mkdir(parents=True, exist_ok=True)
+            (default_dir / "master_config" / "teacher_config.json").write_text(
+                json.dumps(_DEFAULT_TEACHER_CONFIG, indent=2), encoding="utf-8"
+            )
+            (default_dir / "master_config" / "teaching_journal.md").write_text(
+                FRESH_JOURNAL_TEXT, encoding="utf-8"
+            )
+            (default_dir / "master_config" / "master_chat_history.json").write_text(
+                "[]", encoding="utf-8"
+            )
+
+        if old_logs.exists():
+            shutil.copytree(str(old_logs), str(default_dir / "logs"), dirs_exist_ok=True)
+        else:
+            (default_dir / "logs").mkdir(parents=True, exist_ok=True)
+            (default_dir / "logs" / "conversation_log.jsonl").write_text("", encoding="utf-8")
+
+        # Write master_prompt.md if not already copied from old master_config
+        mp_path = default_dir / "master_config" / "master_prompt.md"
+        if not mp_path.exists():
+            mp_path.write_text(DEFAULT_MASTER_BASE_PROMPT, encoding="utf-8")
+
+        # Insert default classroom into DB (is_active=1 set by set_active_classroom below)
+        db.create_classroom("Default Classroom", classroom_id="default")
+        db.set_active_classroom("default")
+
+    # Load whichever classroom is active (covers both first-run and restarts)
+    active_id = db.get_active_classroom_id() or "default"
+    _load_active_classroom(active_id)
+
+
+def _start_new_session() -> None:
+    """Create a new DB session and update the global session ID."""
+    global _current_session_id
+    cfg = _read_teacher_config()
+    system_prompt = _read_file(SYSTEM_PROMPT_PATH)
+    _current_session_id = db.create_session(cfg, system_prompt, classroom_id=_active_classroom_id)
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+
+@app.on_event("startup")
+async def startup():
+    db.init_db()
+    _migrate_if_needed()  # sets all path globals + _active_classroom_id
+    _start_new_session()
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +302,17 @@ class TeacherConfig(BaseModel):
     max_attempts: int = 3
     max_student_questions: int = 3
     student_temperature: float = 0.7
+    student_name: str = "Student"
+    master_name: str = "Master"
+
+
+class CreateClassroomRequest(BaseModel):
+    name: str
+    copy_from: Optional[str] = None
+
+
+class MasterPromptUpdate(BaseModel):
+    prompt: str
 
 
 # ---------------------------------------------------------------------------
@@ -145,17 +329,25 @@ def _read_tools() -> list:
     return json.loads(content) if content else []
 
 
-def _append_to_journal(entry: str) -> None:
+def _append_to_journal(entry: str, entry_type: str = "evaluation") -> None:
     journal = _read_file(JOURNAL_PATH)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     new_entry = f"\n\n---\n**{timestamp}**\n\n{entry}"
     JOURNAL_PATH.write_text(journal + new_entry, encoding="utf-8")
+    # Also log to DB
+    if _current_session_id:
+        db.log_journal_entry(_current_session_id, entry_type, entry)
 
 
 def _log_interaction(data: dict) -> None:
+    # Write to JSONL (compatibility fallback)
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(data) + "\n")
+    # Write to DB
+    if _current_session_id:
+        cfg = _read_teacher_config()
+        db.log_interaction(_current_session_id, data, cfg)
 
 
 async def _broadcast_status(message: str) -> None:
@@ -180,28 +372,20 @@ def _save_master_chat_history(history: list) -> None:
     MASTER_CHAT_HISTORY_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
-def _read_recent_logs(last_n: int = 20) -> list:
-    """Return a trimmed summary of the last N log entries (to avoid token bloat)."""
-    if not LOG_PATH.exists():
-        return []
-    lines = LOG_PATH.read_text(encoding="utf-8").strip().splitlines()
-    recent = lines[-last_n:]
-    entries = []
-    for line in recent:
-        try:
-            entry = json.loads(line)
-            entries.append(
-                {
-                    "timestamp": entry.get("timestamp", ""),
-                    "question": entry.get("question", ""),
-                    "student_answer": str(entry.get("student_answer", ""))[:300],
-                    "had_errors": entry.get("had_errors", False),
-                    "verdict": entry.get("evaluation", {}).get("verdict", ""),
-                }
-            )
-        except json.JSONDecodeError:
-            pass
-    return entries
+def _format_recent_sessions(sessions: list) -> str:
+    if not sessions:
+        return "(No previous sessions.)"
+    lines = []
+    for s in sessions:
+        ended = s.get("ended_at") or "ongoing"
+        ended_short = ended[:10] if ended != "ongoing" else "ongoing"
+        summary = s.get("summary") or "(no summary)"
+        lines.append(
+            f"- **{s['id']}** ({s.get('student_name','Student')} / {s.get('master_name','Master')}) "
+            f"started: {s.get('created_at','')[:10]}, ended: {ended_short}\n"
+            f"  Summary: {summary}"
+        )
+    return "\n".join(lines)
 
 
 def _build_master_context_block() -> str:
@@ -209,14 +393,19 @@ def _build_master_context_block() -> str:
     system_prompt = _read_file(SYSTEM_PROMPT_PATH)
     tools = _read_tools()
     journal = _read_file(JOURNAL_PATH)
-    recent_logs = _read_recent_logs(last_n=20)
+    recent_sessions = db.get_recent_sessions(limit=10)
+    recent_interactions = db.get_recent_interactions(last_n=20)
+    sessions_md = _format_recent_sessions(recent_sessions)
     return (
         "<current_system_state>\n"
+        f"## Active Classroom: {_active_classroom_id} (files at classrooms/{_active_classroom_id}/)\n\n"
         f"## Student's System Prompt:\n{system_prompt}\n\n"
         f"## Student's Available Tools:\n{json.dumps(tools, indent=2)}\n\n"
-        f"## Teaching Journal:\n{journal}\n\n"
-        f"## Recent Student Conversations (last 20 interactions):\n"
-        f"{json.dumps(recent_logs, indent=2)}\n"
+        f"## Teaching Journal (current session):\n{journal}\n\n"
+        f"## Past Sessions (last 10):\n{sessions_md}\n\n"
+        f"## Recent Interactions (last 20):\n{json.dumps(recent_interactions, indent=2)}\n\n"
+        "Note: Full interaction history is in SQLite DB at `data/master_student.db` "
+        "(tables: sessions, interactions, journal_entries)\n"
         "</current_system_state>"
     )
 
@@ -235,10 +424,12 @@ def _execute_master_action(action: dict) -> str:
                 description=payload["description"],
                 parameters=payload["parameters"],
                 implementation=payload["implementation"],
+                tools_dir=TOOLS_DIR,
+                tools_json=TOOLS_JSON_PATH,
             )
             return f"Tool '{payload['name']}' added"
         elif action_type == "remove_tool":
-            remove_tool(payload["name"])
+            remove_tool(payload["name"], tools_dir=TOOLS_DIR, tools_json=TOOLS_JSON_PATH)
             return f"Tool '{payload['name']}' removed"
         elif action_type == "edit_code":
             fp = payload.get("file_path", "").strip()
@@ -257,70 +448,55 @@ def _execute_master_action(action: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Journal compression
+# Journal compression / session archiving
 # ---------------------------------------------------------------------------
 
-_CROSS_SESSION_BOILERPLATE = "(No sessions compressed yet.)"
 
-# Patterns that indicate a boilerplate-only journal (nothing real was written)
-_BOILERPLATE_JOURNAL_PATTERNS = [
-    r"\(No entries yet\.",
-    r"\(New session started",
-]
-
-
-def _journal_has_real_content(journal_text: str) -> bool:
-    """Return True only if the journal has actual teaching entries beyond the header boilerplate."""
-    # Find the end of the last boilerplate line
-    last_pos = 0
-    for pattern in _BOILERPLATE_JOURNAL_PATTERNS:
-        m = re.search(pattern, journal_text)
-        if m:
-            # Advance past the entire line containing the match
-            line_end = journal_text.find("\n", m.end())
-            last_pos = max(last_pos, line_end if line_end != -1 else m.end())
-    # If there's non-whitespace content after all boilerplate lines, it's real
-    return bool(journal_text[last_pos:].strip())
+def _has_journal_content(journal_text: str) -> bool:
+    """Return True if the journal has actual teaching entries beyond the header boilerplate."""
+    skip_prefixes = ("#", "*", "---")
+    boilerplate_starts = ("(No entries yet.", "(New session started")
+    for line in journal_text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if any(s.startswith(p) for p in skip_prefixes):
+            continue
+        if any(s.startswith(b) for b in boilerplate_starts):
+            continue
+        return True
+    return False
 
 
 def _archive_journal() -> Optional[str]:
     """
     Compress the current teaching journal:
     1. Ask the master to summarize it.
-    2. Save the full journal to master_config/sessions/session_<timestamp>.md.
-    3. Append the summary to master_config/cross_session_journal.md.
-    4. Reset teaching_journal.md to a fresh state.
+    2. Save the full journal text as a 'session_archive' journal_entry in DB.
+    3. Reset teaching_journal.md to a fresh state.
 
     Returns the summary text, or None if the journal had no meaningful content.
+    Does NOT call db.end_session() — callers are responsible for ending the session.
     """
     journal_text = _read_file(JOURNAL_PATH)
 
-    # Skip if there's nothing worth compressing
-    if not journal_text.strip() or not _journal_has_real_content(journal_text):
+    if not journal_text.strip() or not _has_journal_content(journal_text):
         return None
 
-    # Ask the master to summarize
     cfg = _read_teacher_config()
     summary = compress_journal(journal_text, model=cfg["master_model"])
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
 
-    # Archive full session journal
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    session_file = SESSIONS_DIR / f"session_{timestamp}.md"
-    session_file.write_text(journal_text, encoding="utf-8")
+    # Archive full session journal text to DB
+    if _current_session_id:
+        db.log_journal_entry(_current_session_id, "session_archive", journal_text)
 
-    # Append summary to cross-session journal (strip first-run boilerplate if present)
-    cross = _read_file(CROSS_SESSION_JOURNAL_PATH)
-    cross = cross.replace(_CROSS_SESSION_BOILERPLATE, "").strip()
-    cross_entry = f"\n\n---\n## Session {timestamp}\n\n{summary}\n"
-    CROSS_SESSION_JOURNAL_PATH.write_text(cross + cross_entry, encoding="utf-8")
-
-    # Reset current journal with a note pointing to the archive
+    # Reset current journal with a note
     JOURNAL_PATH.write_text(
         FRESH_JOURNAL_TEXT.replace(
             "(No entries yet. The journey begins.)",
-            f"(New session started {timestamp}. Previous session archived → sessions/session_{timestamp}.md)",
+            f"(New session started {timestamp}. Previous session archived to DB.)",
         ),
         encoding="utf-8",
     )
@@ -347,8 +523,12 @@ async def chat(request: ChatRequest):
         )
         try:
             student_result = ask_student(
-                question, _conversation_history,
+                question,
+                _conversation_history,
                 temperature=float(cfg.get("student_temperature", 0.7)),
+                system_prompt=_read_file(SYSTEM_PROMPT_PATH),
+                tools=_read_tools(),
+                tools_dir=TOOLS_DIR,
             )
         except Exception as exc:
             await _broadcast_status(f"Student error: {exc}")
@@ -362,9 +542,15 @@ async def chat(request: ChatRequest):
         await _broadcast_status("Master evaluating student's answer...")
         try:
             evaluation = evaluate(
-                question, student_result, attempt,
+                question,
+                student_result,
+                attempt,
                 model=cfg.get("master_model", "claude-opus-4-6"),
                 max_student_questions=int(cfg.get("max_student_questions", 3)),
+                master_system_prompt=_build_master_eval_prompt(),
+                student_system_prompt=_read_file(SYSTEM_PROMPT_PATH),
+                tools_content=_read_tools(),
+                journal=_read_file(JOURNAL_PATH),
             )
         except Exception as exc:
             await _broadcast_status(f"Master error: {exc}")
@@ -399,7 +585,7 @@ async def chat(request: ChatRequest):
 
             if action_type == "pass_answer":
                 if journal_entry:
-                    _append_to_journal(journal_entry)
+                    _append_to_journal(journal_entry, entry_type="evaluation")
                 # Update conversation history
                 _conversation_history.append({"role": "user", "content": request.message})
                 _conversation_history.append(
@@ -434,6 +620,8 @@ async def chat(request: ChatRequest):
                         description=payload["description"],
                         parameters=payload["parameters"],
                         implementation=payload["implementation"],
+                        tools_dir=TOOLS_DIR,
+                        tools_json=TOOLS_JSON_PATH,
                     )
                     await _broadcast_status(f"Master added tool '{payload['name']}'. Retrying...")
                 except Exception as exc:
@@ -441,7 +629,7 @@ async def chat(request: ChatRequest):
 
             elif action_type == "remove_tool":
                 try:
-                    remove_tool(payload["name"])
+                    remove_tool(payload["name"], tools_dir=TOOLS_DIR, tools_json=TOOLS_JSON_PATH)
                     await _broadcast_status(f"Master removed tool '{payload['name']}'.")
                 except Exception as exc:
                     await _broadcast_status(f"Failed to remove tool: {exc}")
@@ -462,7 +650,7 @@ async def chat(request: ChatRequest):
 
             elif action_type == "fail_with_explanation":
                 if journal_entry:
-                    _append_to_journal(journal_entry)
+                    _append_to_journal(journal_entry, entry_type="evaluation")
                 await _broadcast_status("Max retries reached. Master providing fallback answer.")
                 return ChatResponse(
                     answer=payload.get("master_answer", "I was unable to get a reliable answer."),
@@ -477,7 +665,7 @@ async def chat(request: ChatRequest):
                 )
 
         if journal_entry:
-            _append_to_journal(journal_entry)
+            _append_to_journal(journal_entry, entry_type="evaluation")
 
     # Safety net — should not be reached
     return ChatResponse(
@@ -527,19 +715,6 @@ async def get_journal():
     return {"journal": _read_file(JOURNAL_PATH)}
 
 
-@app.get("/cross-session-journal")
-async def get_cross_session_journal():
-    return {"journal": _read_file(CROSS_SESSION_JOURNAL_PATH)}
-
-
-@app.get("/sessions")
-async def list_sessions():
-    if not SESSIONS_DIR.exists():
-        return {"sessions": []}
-    files = sorted(SESSIONS_DIR.glob("session_*.md"), reverse=True)
-    return {"sessions": [f.name for f in files]}
-
-
 @app.post("/compress-journal")
 async def compress_journal_endpoint():
     await _broadcast_status("Compressing journal...")
@@ -549,7 +724,9 @@ async def compress_journal_endpoint():
         return {"status": "error", "error": str(exc)}
     if summary is None:
         return {"status": "skipped", "reason": "Journal has no meaningful content to compress"}
-    # Note: no final broadcast here — the frontend fetch response handles the done state
+    # End the current session in DB and start a new one
+    db.end_session(_current_session_id, summary)
+    _start_new_session()
     return {"status": "ok", "summary": summary}
 
 
@@ -571,36 +748,38 @@ async def get_logs(limit: int = 50):
 @app.post("/reset")
 async def reset():
     """Compress the journal, then restore initial state for a fresh experiment."""
+    global _master_chat_history
+
     # Compress current session journal before wiping
     await _broadcast_status("Compressing journal before reset...")
     try:
-        _archive_journal()
+        summary = _archive_journal()
     except Exception:
-        pass  # Don't let compression failure block the reset
+        summary = None
+
+    # End current DB session
+    db.end_session(_current_session_id, summary)
 
     SYSTEM_PROMPT_PATH.write_text(INITIAL_SYSTEM_PROMPT, encoding="utf-8")
     TOOLS_JSON_PATH.write_text("[]", encoding="utf-8")
-    # Remove all tool Python files
-    tools_dir = BASE_DIR / "student_config" / "tools"
-    for f in tools_dir.glob("*.py"):
+    # Remove all tool Python files in the active classroom
+    for f in TOOLS_DIR.glob("*.py"):
         if f.name != "example_tool.py":
             f.unlink()
-    # Clear log
+    # Clear JSONL log
     LOG_PATH.write_text("", encoding="utf-8")
-    # Journal was already reset by _archive_journal(); ensure it's fresh if archive was skipped
-    if _journal_has_real_content(_read_file(JOURNAL_PATH)):
+    # Ensure journal is fresh (archive may have already reset it)
+    if _has_journal_content(_read_file(JOURNAL_PATH)):
         JOURNAL_PATH.write_text(FRESH_JOURNAL_TEXT, encoding="utf-8")
-    # Clear cross-session journal and all session archives
-    CROSS_SESSION_JOURNAL_PATH.write_text(FRESH_CROSS_SESSION_TEXT, encoding="utf-8")
-    if SESSIONS_DIR.exists():
-        for f in SESSIONS_DIR.glob("*.md"):
-            f.unlink()
     # Clear conversation history
     _conversation_history.clear()
     # Clear master chat history
-    global _master_chat_history
     _master_chat_history = []
     _save_master_chat_history(_master_chat_history)
+
+    # Start new DB session (with reset system prompt)
+    _start_new_session()
+
     return {"status": "reset complete"}
 
 
@@ -612,11 +791,15 @@ async def new_chat():
     # Archive current session journal so master retains cross-session memory
     await _broadcast_status("Archiving session journal...")
     try:
-        _archive_journal()
+        summary = _archive_journal()
     except Exception:
-        pass  # Don't block new chat if compression fails
+        summary = None
 
-    # Clear conversation log
+    # End current DB session and start a new one
+    db.end_session(_current_session_id, summary)
+    _start_new_session()
+
+    # Clear JSONL conversation log
     LOG_PATH.write_text("", encoding="utf-8")
 
     # Clear in-memory conversation history
@@ -634,19 +817,11 @@ async def clear_history():
     """Wipe all logs and history without touching student config or compressing journals."""
     global _master_chat_history
 
-    # Clear conversation log
+    # Clear JSONL log
     LOG_PATH.write_text("", encoding="utf-8")
 
     # Reset teaching journal to fresh state
     JOURNAL_PATH.write_text(FRESH_JOURNAL_TEXT, encoding="utf-8")
-
-    # Reset cross-session journal to fresh state
-    CROSS_SESSION_JOURNAL_PATH.write_text(FRESH_CROSS_SESSION_TEXT, encoding="utf-8")
-
-    # Remove all archived session files
-    if SESSIONS_DIR.exists():
-        for f in SESSIONS_DIR.glob("*.md"):
-            f.unlink()
 
     # Clear in-memory conversation history
     _conversation_history.clear()
@@ -655,6 +830,139 @@ async def clear_history():
     _master_chat_history = []
     _save_master_chat_history(_master_chat_history)
 
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# DB query endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/db/sessions")
+async def db_list_sessions():
+    """List all sessions with metadata and interaction counts."""
+    return {"sessions": db.get_all_sessions()}
+
+
+@app.get("/db/sessions/{session_id}/interactions")
+async def db_session_interactions(session_id: str):
+    """Return all interactions for a specific session."""
+    return {"interactions": db.get_session_interactions(session_id)}
+
+
+@app.get("/db/export")
+async def db_export():
+    """Export all interactions as JSONL (for fine-tuning)."""
+    with tempfile.NamedTemporaryFile(
+        suffix=".jsonl", delete=False, mode="w", encoding="utf-8"
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+    count = db.export_jsonl(tmp_path)
+    return FileResponse(
+        path=str(tmp_path),
+        filename="master_student_interactions.jsonl",
+        media_type="application/x-ndjson",
+        headers={"X-Row-Count": str(count)},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Open DB in external viewer
+# ---------------------------------------------------------------------------
+
+
+@app.post("/open-db")
+async def open_db():
+    """Open the SQLite database file in the system's associated viewer (macOS: DB Browser)."""
+    db_path = db.DB_PATH
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database file not found — start the server first to create it.")
+    try:
+        subprocess.Popen(["open", str(db_path)])
+        return {"status": "ok", "path": str(db_path)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to open database: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Classroom management endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/classrooms")
+async def list_classrooms():
+    return {"classrooms": db.get_classrooms(), "active_id": _active_classroom_id}
+
+
+@app.post("/classrooms")
+async def create_classroom_endpoint(request: CreateClassroomRequest):
+    classroom_id = db.create_classroom(request.name)
+    c_dir = _classroom_dir(classroom_id)
+
+    if request.copy_from:
+        src_dir = _classroom_dir(request.copy_from)
+        if src_dir.exists():
+            shutil.copytree(str(src_dir), str(c_dir))
+        else:
+            _create_classroom_skeleton(classroom_id)
+    else:
+        _create_classroom_skeleton(classroom_id)
+
+    return {"id": classroom_id, "name": request.name}
+
+
+@app.post("/classrooms/{classroom_id}/activate")
+async def activate_classroom(classroom_id: str):
+    global _master_chat_history
+
+    if classroom_id == _active_classroom_id:
+        return {"status": "already active"}
+
+    # Verify classroom exists
+    classrooms = db.get_classrooms()
+    if not any(c["id"] == classroom_id for c in classrooms):
+        raise HTTPException(status_code=404, detail=f"Classroom '{classroom_id}' not found")
+
+    # End current session without compressing
+    db.end_session(_current_session_id, None)
+
+    db.set_active_classroom(classroom_id)
+    _load_active_classroom(classroom_id)
+    _conversation_history.clear()
+    _start_new_session()
+
+    return {"status": "activated", "classroom_id": classroom_id}
+
+
+@app.delete("/classrooms/{classroom_id}")
+async def delete_classroom(classroom_id: str):
+    if classroom_id == _active_classroom_id:
+        raise HTTPException(status_code=400, detail="Cannot delete the active classroom")
+    if classroom_id == "default":
+        raise HTTPException(status_code=400, detail="Cannot delete the default classroom")
+
+    c_dir = _classroom_dir(classroom_id)
+    if c_dir.exists():
+        shutil.rmtree(str(c_dir))
+    db.delete_classroom(classroom_id)
+
+    return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Master prompt endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/master-prompt")
+async def get_master_prompt():
+    return {"prompt": _read_file(MASTER_PROMPT_PATH)}
+
+
+@app.put("/master-prompt")
+async def update_master_prompt(body: MasterPromptUpdate):
+    MASTER_PROMPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MASTER_PROMPT_PATH.write_text(body.prompt, encoding="utf-8")
     return {"status": "ok"}
 
 
@@ -687,8 +995,10 @@ async def master_chat(request: ChatRequest):
     cfg = _read_teacher_config()
     try:
         assistant_message = direct_chat(
-            _master_chat_history, context_block,
+            _master_chat_history,
+            context_block,
             model=cfg.get("master_model", "claude-opus-4-6"),
+            master_system_prompt=_build_master_lounge_prompt(),
         )
     except Exception as exc:
         _master_chat_history.pop()  # roll back the user message
@@ -704,7 +1014,7 @@ async def master_chat(request: ChatRequest):
         result = _execute_master_action(action)
         actions_executed.append({"type": action.get("type"), "result": result})
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        _append_to_journal(f"[Teacher's Lounge — {timestamp}] {result}")
+        _append_to_journal(f"[Teacher's Lounge — {timestamp}] {result}", entry_type="teacher_lounge")
 
     # If any actions failed, feed the failures back so the master can correct itself
     failures = [a for a in actions_executed if (a.get("result") or "").startswith("Action failed")]
@@ -720,15 +1030,20 @@ async def master_chat(request: ChatRequest):
         _master_chat_history.append({"role": "user", "content": feedback})
         try:
             correction_message = direct_chat(
-                _master_chat_history, context_block,
+                _master_chat_history,
+                context_block,
                 model=cfg.get("master_model", "claude-opus-4-6"),
+                master_system_prompt=_build_master_lounge_prompt(),
             )
             _master_chat_history.append({"role": "assistant", "content": correction_message})
             for action in try_extract_actions(correction_message):
                 result = _execute_master_action(action)
                 correction_actions_executed.append({"type": action.get("type"), "result": result})
                 timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                _append_to_journal(f"[Teacher's Lounge correction — {timestamp}] {result}")
+                _append_to_journal(
+                    f"[Teacher's Lounge correction — {timestamp}] {result}",
+                    entry_type="teacher_lounge",
+                )
         except Exception:
             pass  # correction is best-effort; don't fail the whole request
         _save_master_chat_history(_master_chat_history)

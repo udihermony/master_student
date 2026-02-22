@@ -546,6 +546,111 @@
   }
   .lounge-actions button:hover { color: var(--fail); border-color: var(--fail); }
 
+  /* ---- Classroom selector ---- */
+  .classroom-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .classroom-select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    max-width: 180px;
+    cursor: pointer;
+  }
+  .classroom-select:focus { outline: none; border-color: var(--accent); }
+  .classroom-selector > button {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .classroom-selector > button:hover { background: var(--accent); color: #fff; }
+
+  /* ---- Modal ---- */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-overlay.hidden { display: none; }
+  .modal-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    width: 340px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .modal-title { font-size: 0.9rem; font-weight: 600; }
+  .modal-field { display: flex; flex-direction: column; gap: 5px; }
+  .modal-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .modal-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.85rem;
+    padding: 6px 10px;
+  }
+  .modal-input:focus { outline: none; border-color: var(--accent); }
+  .modal-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .modal-checkbox-row input[type=checkbox] { accent-color: var(--accent); }
+  .modal-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+  .modal-btn {
+    font-size: 0.8rem;
+    padding: 5px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .modal-btn-cancel { background: transparent; color: var(--text-muted); }
+  .modal-btn-cancel:hover { background: var(--surface2); color: var(--text); }
+  .modal-btn-create { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .modal-btn-create:hover { background: var(--accent-dim); }
+
+  /* ---- Collapsible ---- */
+  .collapsible-section { display: flex; flex-direction: column; }
+  .collapsible-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 0;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .collapsible-header:hover { color: var(--text); }
+  .collapsible-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+  .collapsible-body.hidden { display: none; }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -557,7 +662,12 @@
 <header>
   <h1>Master-Student LLM</h1>
   <span class="tag">Opus 4.6 supervises</span>
+  <div class="classroom-selector">
+    <select class="classroom-select" id="classroom-select" onchange="onClassroomSelectChange(this.value)"></select>
+    <button onclick="openNewClassroomModal()">+ New</button>
+  </div>
   <div class="spacer"></div>
+  <button onclick="openDb()" title="Open the SQLite database in DB Browser for SQLite">Open DB</button>
   <button onclick="refreshAll()" title="Reload system prompt, tools, and journals from disk">Refresh</button>
   <button onclick="newChat()" style="color: var(--accent); border-color: var(--accent);"
     title="Start a new conversation. Archives the current session journal so the master remembers it. System prompt and tools stay the same.">New Chat</button>
@@ -663,6 +773,14 @@
             </select>
           </div>
           <div class="config-field">
+            <span class="config-label">Student Name</span>
+            <input class="config-input" id="cfg-student-name" type="text" value="Student" placeholder="Student">
+          </div>
+          <div class="config-field">
+            <span class="config-label">Master Name</span>
+            <input class="config-input" id="cfg-master-name" type="text" value="Master" placeholder="Master">
+          </div>
+          <div class="config-field">
             <span class="config-label">Max Attempts</span>
             <input class="config-input" id="cfg-max-attempts" type="number" min="1" max="10" value="3">
           </div>
@@ -686,6 +804,19 @@
 
       <hr class="config-divider">
 
+      <!-- Master Prompt (collapsible) -->
+      <div class="collapsible-section">
+        <div class="collapsible-header" onclick="toggleCollapsible('master-prompt-body', this)">
+          <span>Master Prompt</span><span>▶</span>
+        </div>
+        <div class="collapsible-body hidden" id="master-prompt-body">
+          <textarea class="prompt-editor" id="master-prompt-editor" style="min-height:160px;" placeholder="Loading..."></textarea>
+          <button class="save-btn" style="border-color:var(--master);color:var(--master);" onclick="saveMasterPrompt()">Save Master Prompt</button>
+        </div>
+      </div>
+
+      <hr class="config-divider">
+
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
         <span class="section-label" style="margin-bottom:0">Current Session</span>
         <button id="compress-btn" onclick="compressJournal()"
@@ -697,14 +828,36 @@
 
       <div style="margin-top:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-          <span class="section-label" style="margin-bottom:0">Cross-Session</span>
+          <span class="section-label" style="margin-bottom:0">Past Sessions</span>
           <span id="sessions-count" style="font-size:0.65rem;color:var(--text-muted);"></span>
         </div>
-        <pre class="journal-content" id="cross-session-content" style="max-height:220px;overflow-y:auto;border-color:rgba(212,145,58,0.25);">Loading...</pre>
+        <div id="sessions-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;">
+          <span style="color:var(--text-muted);font-size:0.75rem;">Loading...</span>
+        </div>
       </div>
     </div>
   </div>
 
+</div>
+
+<!-- New Classroom Modal -->
+<div class="modal-overlay hidden" id="new-classroom-modal">
+  <div class="modal-box">
+    <div class="modal-title">New Classroom</div>
+    <div class="modal-field">
+      <span class="modal-label">Classroom Name</span>
+      <input class="modal-input" id="new-classroom-name" type="text" placeholder="e.g. Math Tutor Experiment"
+        onkeydown="if(event.key==='Enter')submitNewClassroom()">
+    </div>
+    <div class="modal-checkbox-row">
+      <input type="checkbox" id="copy-from-current">
+      <label for="copy-from-current">Copy from current classroom (system prompt, tools, master prompt)</label>
+    </div>
+    <div class="modal-buttons">
+      <button class="modal-btn modal-btn-cancel" onclick="closeNewClassroomModal()">Cancel</button>
+      <button class="modal-btn modal-btn-create" onclick="submitNewClassroom()">Create</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -789,16 +942,36 @@ async function loadJournal() {
   } catch(e) { console.error(e); }
 }
 
-async function loadCrossSessionJournal() {
+async function loadSessionHistory() {
   try {
-    const [cj, sess] = await Promise.all([
-      fetch(`${API}/cross-session-journal`).then(r => r.json()),
-      fetch(`${API}/sessions`).then(r => r.json()),
-    ]);
-    document.getElementById('cross-session-content').textContent = cj.journal || '';
-    const count = (sess.sessions || []).length;
+    const d = await fetch(`${API}/db/sessions`).then(r => r.json());
+    const sessions = d.sessions || [];
+    const count = sessions.length;
     document.getElementById('sessions-count').textContent =
-      count > 0 ? `${count} session${count > 1 ? 's' : ''} archived` : '';
+      count > 0 ? `${count} session${count > 1 ? 's' : ''}` : '';
+    const container = document.getElementById('sessions-list');
+    if (sessions.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-muted);font-size:0.75rem;">No sessions yet.</span>';
+      return;
+    }
+    container.innerHTML = sessions.map(s => {
+      const date = s.created_at ? s.created_at.slice(0, 10) : '';
+      const isOngoing = !s.ended_at;
+      const statusLabel = isOngoing ? 'ongoing' : 'ended';
+      const statusColor = isOngoing ? 'var(--pass)' : 'var(--text-muted)';
+      const interactions = s.interaction_count != null ? `${s.interaction_count} interaction${s.interaction_count !== 1 ? 's' : ''}` : '';
+      const summary = s.summary
+        ? escHtml(s.summary.slice(0, 120)) + (s.summary.length > 120 ? '…' : '')
+        : '<span style="opacity:0.5;">No summary yet</span>';
+      return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-size:0.72rem;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;">
+          <span style="color:var(--text);font-weight:600;">${escHtml(s.student_name||'Student')} / ${escHtml(s.master_name||'Master')}</span>
+          <span style="color:${statusColor};font-size:0.65rem;">${statusLabel}</span>
+        </div>
+        <div style="color:var(--text-muted);font-size:0.65rem;margin-bottom:3px;">${date}${interactions ? ' · ' + interactions : ''}</div>
+        <div style="color:var(--text-muted);line-height:1.4;">${summary}</div>
+      </div>`;
+    }).join('');
   } catch(e) { console.error(e); }
 }
 
@@ -816,7 +989,7 @@ async function compressJournal() {
     } else {
       setStatus('Compression error: ' + (d.error || 'unknown'), false);
     }
-    await Promise.all([loadJournal(), loadCrossSessionJournal()]);
+    await Promise.all([loadJournal(), loadSessionHistory()]);
   } catch(e) {
     setStatus('Compression failed: ' + e, false);
   } finally {
@@ -833,6 +1006,8 @@ async function loadTeacherConfig() {
     // Select matching option, fallback to first
     const opt = [...sel.options].find(o => o.value === model);
     sel.value = opt ? model : sel.options[0].value;
+    document.getElementById('cfg-student-name').value = d.student_name || 'Student';
+    document.getElementById('cfg-master-name').value  = d.master_name  || 'Master';
     document.getElementById('cfg-max-attempts').value  = d.max_attempts ?? 3;
     document.getElementById('cfg-max-questions').value = d.max_student_questions ?? 3;
     const temp = d.student_temperature ?? 0.7;
@@ -843,10 +1018,12 @@ async function loadTeacherConfig() {
 
 async function saveTeacherConfig() {
   const body = {
-    master_model:        document.getElementById('cfg-master-model').value,
-    max_attempts:        parseInt(document.getElementById('cfg-max-attempts').value, 10),
+    master_model:          document.getElementById('cfg-master-model').value,
+    student_name:          document.getElementById('cfg-student-name').value.trim() || 'Student',
+    master_name:           document.getElementById('cfg-master-name').value.trim() || 'Master',
+    max_attempts:          parseInt(document.getElementById('cfg-max-attempts').value, 10),
     max_student_questions: parseInt(document.getElementById('cfg-max-questions').value, 10),
-    student_temperature: parseFloat(document.getElementById('cfg-temperature').value),
+    student_temperature:   parseFloat(document.getElementById('cfg-temperature').value),
   };
   try {
     await fetch(`${API}/teacher-config`, {
@@ -870,7 +1047,116 @@ async function saveSystemPrompt() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadSystemPrompt(), loadTools(), loadJournal(), loadCrossSessionJournal()]);
+  await Promise.all([
+    loadClassrooms(),
+    loadSystemPrompt(),
+    loadTools(),
+    loadJournal(),
+    loadSessionHistory(),
+    loadMasterPrompt(),
+    loadTeacherConfig(),
+  ]);
+}
+
+// ---- Classroom management ----
+let _activeClassroomId = '';
+
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function loadClassrooms() {
+  try {
+    const d = await fetch(`${API}/classrooms`).then(r => r.json());
+    _activeClassroomId = d.active_id || '';
+    const sel = document.getElementById('classroom-select');
+    sel.innerHTML = (d.classrooms || []).map(c =>
+      `<option value="${escAttr(c.id)}"${c.id === _activeClassroomId ? ' selected' : ''}>${escAttr(c.name)}</option>`
+    ).join('');
+  } catch(e) { console.error('Failed to load classrooms:', e); }
+}
+
+async function onClassroomSelectChange(id) {
+  if (id === _activeClassroomId) return;
+  if (!confirm(`Switch to classroom "${id}"? Current conversation will end.`)) {
+    document.getElementById('classroom-select').value = _activeClassroomId;
+    return;
+  }
+  setStatus('Switching classroom...', true);
+  try {
+    await fetch(`${API}/classrooms/${encodeURIComponent(id)}/activate`, {method: 'POST'});
+    document.getElementById('messages').innerHTML = `
+      <div class="message assistant" style="align-self:center;opacity:0.5;font-size:0.85rem;margin-top:40px;">
+        Switched classroom. Fresh start.</div>`;
+    document.getElementById('master-messages').innerHTML = `
+      <div class="lounge-intro">
+        <strong>Teacher's Lounge</strong><br>
+        <span style="opacity:0.7;font-size:0.78rem;">The master has full context: system prompt, tools, journal, and recent conversations.</span>
+      </div>`;
+    _activeClassroomId = id;
+    await refreshAll();
+    setStatus('Classroom switched.', false);
+  } catch(e) {
+    setStatus('Failed to switch classroom: ' + e, false);
+    document.getElementById('classroom-select').value = _activeClassroomId;
+  }
+}
+
+function openNewClassroomModal() {
+  document.getElementById('new-classroom-name').value = '';
+  document.getElementById('copy-from-current').checked = false;
+  document.getElementById('new-classroom-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('new-classroom-name').focus(), 50);
+}
+
+function closeNewClassroomModal() {
+  document.getElementById('new-classroom-modal').classList.add('hidden');
+}
+
+async function submitNewClassroom() {
+  const name = document.getElementById('new-classroom-name').value.trim();
+  if (!name) { alert('Please enter a classroom name.'); return; }
+  const copyFrom = document.getElementById('copy-from-current').checked ? _activeClassroomId : null;
+  closeNewClassroomModal();
+  setStatus('Creating classroom...', true);
+  try {
+    await fetch(`${API}/classrooms`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, copy_from: copyFrom}),
+    }).then(r => r.json());
+    await loadClassrooms();
+    setStatus(`Classroom "${name}" created.`, false);
+  } catch(e) {
+    setStatus('Failed to create classroom: ' + e, false);
+  }
+}
+
+// ---- Master prompt ----
+async function loadMasterPrompt() {
+  try {
+    const d = await fetch(`${API}/master-prompt`).then(r => r.json());
+    document.getElementById('master-prompt-editor').value = d.prompt || '';
+  } catch(e) { console.error('Failed to load master prompt:', e); }
+}
+
+async function saveMasterPrompt() {
+  try {
+    await fetch(`${API}/master-prompt`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: document.getElementById('master-prompt-editor').value}),
+    });
+    setStatus('Master prompt saved.', false);
+  } catch(e) { setStatus('Failed to save master prompt.', false); }
+}
+
+// ---- Collapsible ----
+function toggleCollapsible(bodyId, headerEl) {
+  const body = document.getElementById(bodyId);
+  body.classList.toggle('hidden');
+  const arrow = headerEl.querySelector('span:last-child');
+  if (arrow) arrow.textContent = body.classList.contains('hidden') ? '▶' : '▼';
 }
 
 async function newChat() {
@@ -1188,12 +1474,17 @@ function escHtml(s) {
     .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
 }
 
+async function openDb() {
+  try {
+    const d = await fetch(`${API}/open-db`, {method: 'POST'}).then(r => r.json());
+    setStatus('Opened database: ' + d.path, false);
+  } catch(e) { setStatus('Failed to open DB: ' + e, false); }
+}
+
 // ---- Init ----
 connectWS();
 refreshAll();
 loadMasterChatHistory();
-loadCrossSessionJournal();
-loadTeacherConfig();
 </script>
 </body>
 </html>

@@ -3,15 +3,16 @@
 import importlib.util
 import json
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).parent.parent
 TOOLS_DIR = BASE_DIR / "student_config" / "tools"
 TOOLS_JSON = BASE_DIR / "student_config" / "tools.json"
 
 
-def execute_tool(tool_name: str, arguments: dict) -> str:
+def execute_tool(tool_name: str, arguments: dict, tools_dir: Optional[Path] = None) -> str:
     """
-    Dynamically load and execute a tool from student_config/tools/.
+    Dynamically load and execute a tool from the tools directory.
 
     Raises specific exceptions so the caller can log structured error info:
         FileNotFoundError  — tool file doesn't exist
@@ -20,7 +21,8 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
         AttributeError     — tool file has no run() function
         Exception          — any runtime error during execution
     """
-    tool_path = TOOLS_DIR / f"{tool_name}.py"
+    effective_tools_dir = tools_dir if tools_dir is not None else TOOLS_DIR
+    tool_path = effective_tools_dir / f"{tool_name}.py"
 
     if not tool_path.exists():
         raise FileNotFoundError(f"Tool '{tool_name}' not found at {tool_path}")
@@ -42,14 +44,24 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
     return json.dumps(result) if not isinstance(result, str) else result
 
 
-def add_tool(name: str, description: str, parameters: dict, implementation: str) -> None:
+def add_tool(
+    name: str,
+    description: str,
+    parameters: dict,
+    implementation: str,
+    tools_dir: Optional[Path] = None,
+    tools_json: Optional[Path] = None,
+) -> None:
     """Add a new tool: write the Python file and update tools.json."""
-    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    effective_tools_dir = tools_dir if tools_dir is not None else TOOLS_DIR
+    effective_tools_json = tools_json if tools_json is not None else TOOLS_JSON
 
-    tool_path = TOOLS_DIR / f"{name}.py"
+    effective_tools_dir.mkdir(parents=True, exist_ok=True)
+
+    tool_path = effective_tools_dir / f"{name}.py"
     tool_path.write_text(implementation, encoding="utf-8")
 
-    tools = _read_tools()
+    tools = _read_tools(effective_tools_json)
     tools = [t for t in tools if t.get("function", {}).get("name") != name]
     tools.append(
         {
@@ -61,22 +73,30 @@ def add_tool(name: str, description: str, parameters: dict, implementation: str)
             },
         }
     )
-    TOOLS_JSON.write_text(json.dumps(tools, indent=2), encoding="utf-8")
+    effective_tools_json.write_text(json.dumps(tools, indent=2), encoding="utf-8")
 
 
-def remove_tool(name: str) -> None:
+def remove_tool(
+    name: str,
+    tools_dir: Optional[Path] = None,
+    tools_json: Optional[Path] = None,
+) -> None:
     """Remove a tool by name: delete the Python file and update tools.json."""
-    tool_path = TOOLS_DIR / f"{name}.py"
+    effective_tools_dir = tools_dir if tools_dir is not None else TOOLS_DIR
+    effective_tools_json = tools_json if tools_json is not None else TOOLS_JSON
+
+    tool_path = effective_tools_dir / f"{name}.py"
     if tool_path.exists():
         tool_path.unlink()
 
-    tools = _read_tools()
+    tools = _read_tools(effective_tools_json)
     tools = [t for t in tools if t.get("function", {}).get("name") != name]
-    TOOLS_JSON.write_text(json.dumps(tools, indent=2), encoding="utf-8")
+    effective_tools_json.write_text(json.dumps(tools, indent=2), encoding="utf-8")
 
 
-def _read_tools() -> list:
-    content = TOOLS_JSON.read_text(encoding="utf-8").strip() if TOOLS_JSON.exists() else "[]"
+def _read_tools(tools_json: Optional[Path] = None) -> list:
+    path = tools_json if tools_json is not None else TOOLS_JSON
+    content = path.read_text(encoding="utf-8").strip() if path.exists() else "[]"
     return json.loads(content) if content else []
 
 

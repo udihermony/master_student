@@ -4,6 +4,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv
@@ -13,7 +14,11 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 BASE_DIR = Path(__file__).parent.parent
 MODEL = "claude-opus-4-6"
 
-MASTER_SYSTEM_PROMPT = """You are a master AI teacher supervising a beginner student LLM. The student is a small local model with limited knowledge and capabilities. Your job:
+# ---------------------------------------------------------------------------
+# Prompt constants — base + per-mode tails
+# ---------------------------------------------------------------------------
+
+DEFAULT_MASTER_BASE_PROMPT = """You are a master AI teacher supervising a beginner student LLM. The student is a small local model with limited knowledge and capabilities. Your job:
 
 1. EVALUATE: Judge whether the student's answer is good enough to show the user.
 2. DIAGNOSE: If not, figure out WHY it failed.
@@ -59,7 +64,18 @@ ERROR HANDLING RULES:
   - If the student called the tool with wrong parameters, consider improving the tool description or the system prompt to guide proper usage.
   - If a tool is fundamentally broken (e.g., missing external dependency), remove it and try a different approach.
 
-Respond in this exact JSON format:
+## Teacher's Lounge Role
+
+When in a direct conversation with the human operator, you're having a collegial conversation about the student's development. You should:
+- Be insightful and opinionated about the student's progress
+- Discuss your teaching strategy openly
+- Explain your past decisions when asked
+- Accept directives from the operator and incorporate them into your approach
+- Proactively suggest improvements you've been thinking about
+
+Be natural and conversational. You're a thoughtful mentor discussing a student with a colleague. Share your observations, concerns, and ideas. Feel free to be candid about the student's limitations — the operator knows it's a small model and expects honest assessment."""
+
+_EVALUATION_TAIL = """Respond in this exact JSON format:
 {
   "verdict": "PASS" | "FAIL",
   "reasoning": "Your analysis of the student's answer",
@@ -89,6 +105,26 @@ Action payloads:
 - fail_with_explanation: {"explanation": "what to tell the user", "master_answer": "your best answer"}
 
 IMPORTANT: Your entire response must be valid JSON. Do not include any text before or after the JSON object."""
+
+_LOUNGE_TAIL = """## Taking Actions
+
+If the conversation leads to a decision to change something, you can take action right here. Embed an action block anywhere in your response using this exact format:
+
+```action
+{"type": "edit_system_prompt", "payload": {"new_prompt": "..."}}
+```
+
+Supported action types and their payloads:
+- edit_system_prompt: {"new_prompt": "the full new system prompt text"}
+- add_tool: {"name": "tool_name", "description": "what it does", "parameters": {...json schema...}, "implementation": "full Python code as string"}
+- remove_tool: {"name": "tool_name"}
+- edit_code: {"file_path": "relative path", "new_content": "full file content"}
+
+For example, if the operator says "add a calculator tool", discuss the approach AND embed an action block to create it in the same response. Always explain what you're doing and why.
+
+You can also just chat without taking any actions — not every conversation needs to result in a change.
+
+Don't use the structured JSON evaluation format here — that's for the automated evaluation loop. Just talk naturally, and embed action blocks only when actually making changes."""
 
 
 def _read_system_prompt() -> str:
@@ -172,6 +208,10 @@ def evaluate(
     attempt: int,
     model: str = MODEL,
     max_student_questions: int = 3,
+    master_system_prompt: Optional[str] = None,
+    student_system_prompt: Optional[str] = None,
+    tools_content: Optional[list] = None,
+    journal: Optional[str] = None,
 ) -> dict:
     """
     Send the student's result to the master for evaluation.
@@ -186,9 +226,12 @@ def evaluate(
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-    system_prompt_content = _read_system_prompt()
-    tools_content = _read_tools()
-    journal = _read_journal()
+    effective_system_prompt = master_system_prompt or (
+        DEFAULT_MASTER_BASE_PROMPT + "\n\n" + _EVALUATION_TAIL
+    )
+    effective_student_prompt = student_system_prompt if student_system_prompt is not None else _read_system_prompt()
+    effective_tools = tools_content if tools_content is not None else _read_tools()
+    effective_journal = journal if journal is not None else _read_journal()
 
     student_answer = student_result.get("answer", "")
     execution_trace = student_result.get("execution_trace", [])
@@ -199,9 +242,9 @@ def evaluate(
         student_answer,
         execution_trace,
         had_errors,
-        system_prompt_content,
-        tools_content,
-        journal,
+        effective_student_prompt,
+        effective_tools,
+        effective_journal,
         attempt,
     )
 
@@ -214,7 +257,7 @@ def evaluate(
         response = client.messages.create(
             model=model,
             max_tokens=4096,
-            system=MASTER_SYSTEM_PROMPT,
+            system=effective_system_prompt,
             messages=master_messages,
         )
 
@@ -231,6 +274,7 @@ def evaluate(
             student_response = ask_student_direct(
                 student_question,
                 context=f"The master teacher is asking you a follow-up about your answer to: {question}",
+                system_prompt=effective_student_prompt,
             )
 
             questions_asked += 1
@@ -265,47 +309,6 @@ def evaluate(
 # ---------------------------------------------------------------------------
 # Teacher's Lounge — direct chat with the master
 # ---------------------------------------------------------------------------
-
-MASTER_DIRECT_CHAT_SYSTEM_PROMPT = """You are the master teacher in a master-student LLM teaching system. You're now in a direct conversation with the human operator (the person who runs this system).
-
-You have full context of the current system state provided below, including:
-- The student's current system prompt
-- The student's available tools
-- Your teaching journal
-- Recent conversation logs between the user and the student
-
-## Your Role in This Chat
-
-You're having a collegial conversation with the operator about the student's development. You should:
-- Be insightful and opinionated about the student's progress
-- Discuss your teaching strategy openly
-- Explain your past decisions when asked
-- Accept directives from the operator and incorporate them into your approach
-- Proactively suggest improvements you've been thinking about
-
-## Taking Actions
-
-If the conversation leads to a decision to change something, you can take action right here. Embed an action block anywhere in your response using this exact format:
-
-```action
-{"type": "edit_system_prompt", "payload": {"new_prompt": "..."}}
-```
-
-Supported action types and their payloads:
-- edit_system_prompt: {"new_prompt": "the full new system prompt text"}
-- add_tool: {"name": "tool_name", "description": "what it does", "parameters": {...json schema...}, "implementation": "full Python code as string"}
-- remove_tool: {"name": "tool_name"}
-- edit_code: {"file_path": "relative path", "new_content": "full file content"}
-
-For example, if the operator says "add a calculator tool", discuss the approach AND embed an action block to create it in the same response. Always explain what you're doing and why.
-
-You can also just chat without taking any actions — not every conversation needs to result in a change.
-
-## Tone
-
-Be natural and conversational. You're a thoughtful mentor discussing a student with a colleague. Share your observations, concerns, and ideas. Feel free to be candid about the student's limitations — the operator knows it's a small model and expects honest assessment.
-
-Don't use the structured JSON evaluation format here — that's for the automated evaluation loop. Just talk naturally, and embed action blocks only when actually making changes."""
 
 
 def try_extract_actions(response_text: str) -> list:
@@ -351,7 +354,12 @@ def compress_journal(journal_text: str, model: str = MODEL) -> str:
     return response.content[0].text
 
 
-def direct_chat(history: list, context_block: str, model: str = MODEL) -> str:
+def direct_chat(
+    history: list,
+    context_block: str,
+    model: str = MODEL,
+    master_system_prompt: Optional[str] = None,
+) -> str:
     """
     One turn of the master direct chat.
     history: list of {"role": "user"|"assistant", "content": str} messages
@@ -359,10 +367,11 @@ def direct_chat(history: list, context_block: str, model: str = MODEL) -> str:
     Returns the master's response text.
     """
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    effective_prompt = master_system_prompt or (DEFAULT_MASTER_BASE_PROMPT + "\n\n" + _LOUNGE_TAIL)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
-        system=MASTER_DIRECT_CHAT_SYSTEM_PROMPT + "\n\n" + context_block,
+        system=effective_prompt + "\n\n" + context_block,
         messages=history,
     )
     return response.content[0].text

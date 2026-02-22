@@ -19,3 +19,10 @@ master_config/master_chat_history.json
 
 # Archived session journals (can get large; cross_session_journal.md is enough)
 master_config/sessions/
+
+# SQLite database (runtime data — not committed)
+data/master_student.db
+
+# Classrooms directory — created automatically on first run from flat config
+# Contains runtime state (journals, chat history, logs). Not committed.
+classrooms/

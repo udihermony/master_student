@@ -38,7 +38,7 @@ def _call_lm_studio(messages: list, tools: Optional[list] = None, temperature: f
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    with httpx.Client(timeout=120.0) as client:
+    with httpx.Client(timeout=None) as client:
         resp = client.post(
             f"{LM_STUDIO_URL}/chat/completions",
             json=payload,
@@ -48,7 +48,14 @@ def _call_lm_studio(messages: list, tools: Optional[list] = None, temperature: f
         return resp.json()
 
 
-def ask_student(question: str, conversation_history: list, temperature: float = 0.7) -> dict:
+def ask_student(
+    question: str,
+    conversation_history: list,
+    temperature: float = 0.7,
+    system_prompt: Optional[str] = None,
+    tools: Optional[list] = None,
+    tools_dir: Optional[Path] = None,
+) -> dict:
     """
     Ask the student LLM a question.
 
@@ -63,15 +70,17 @@ def ask_student(question: str, conversation_history: list, temperature: float = 
     from backend.tool_executor import execute_tool  # lazy import to avoid circular
 
     execution_trace = []
-    system_prompt = _read_system_prompt()
-    tools = _read_tools()
+    effective_system_prompt = system_prompt if system_prompt is not None else _read_system_prompt()
+    effective_tools = tools if tools is not None else _read_tools()
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": effective_system_prompt}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": question})
 
     # Initial LM Studio call
-    response = _call_lm_studio(messages, tools=tools if tools else None, temperature=temperature)
+    response = _call_lm_studio(
+        messages, tools=effective_tools if effective_tools else None, temperature=temperature
+    )
     choice = response["choices"][0]
     message = choice["message"]
 
@@ -99,7 +108,7 @@ def ask_student(question: str, conversation_history: list, temperature: float = 
                 arguments = {}
 
             try:
-                result = execute_tool(tool_name, arguments)
+                result = execute_tool(tool_name, arguments, tools_dir=tools_dir)
                 execution_trace.append(
                     {
                         "step": "tool_execution",
@@ -134,7 +143,9 @@ def ask_student(question: str, conversation_history: list, temperature: float = 
 
         # Second LM Studio call with tool results
         try:
-            response2 = _call_lm_studio(messages, tools=tools if tools else None, temperature=temperature)
+            response2 = _call_lm_studio(
+                messages, tools=effective_tools if effective_tools else None, temperature=temperature
+            )
             message2 = response2["choices"][0]["message"]
             final_answer = message2.get("content") or ""
             execution_trace.append(
@@ -163,16 +174,20 @@ def ask_student(question: str, conversation_history: list, temperature: float = 
     }
 
 
-def ask_student_direct(question: str, context: str = "") -> str:
+def ask_student_direct(
+    question: str,
+    context: str = "",
+    system_prompt: Optional[str] = None,
+) -> str:
     """
     Ask the student a direct question from the master during evaluation.
     Uses the student's current system prompt but no tools (pure Q&A).
     """
-    system_prompt = _read_system_prompt()
+    effective_system_prompt = system_prompt if system_prompt is not None else _read_system_prompt()
     full_question = f"{context}\n\n{question}" if context else question
 
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": effective_system_prompt},
         {"role": "user", "content": full_question},
     ]
 
